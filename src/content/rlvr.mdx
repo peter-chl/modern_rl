@@ -39,7 +39,7 @@ $$
 The reward is received only at the final step $T$: $r_t = 0$ for $t \lt T$ and $r_T = r(x, y)$, so $G_t = r(x, y)$ for every $t$.
 </Definition>
 
-Two features distinguish this from RLHF. First, $\beta$ is often small or zero. In RLHF the KL term protects against exploiting the reward model; a verifier needs less protection, and the KL term mostly serves to keep the policy fluent and stable. Second, and more importantly, **the chain of thought is part of the action**. The response $y$ consists of a long stretch of reasoning followed by a short final answer, and the verifier looks only at the answer. Nothing rewards or penalizes individual reasoning steps; the policy is free to discover whatever intermediate text makes correct answers more likely. A typical prompt template asks the model to reason inside one pair of tags and answer inside another, and a format reward enforces the template.
+Two features distinguish this from RLHF. First, $\beta$ is often small or zero: a verifier needs less protection than a reward model, and the KL term mainly keeps the policy fluent and stable. Second, **the chain of thought is part of the action**. The response is a long stretch of reasoning followed by a short final answer, and the verifier looks only at the answer. Nothing rewards individual reasoning steps; the policy is free to discover whatever intermediate text makes correct answers more likely. A format reward typically enforces a template with the reasoning and the answer in separate tags.
 
 For a binary verifier, write $p_\theta(x) = \Pr_{y \sim \pi_\theta(\cdot \mid x)}[r(x, y) = 1]$ for the per-prompt success probability. Then, ignoring the KL term, $J(\theta) = \mathbb{E}_x[p_\theta(x)]$, the average pass rate. This form will be useful when analyzing what different estimators actually optimize.
 
@@ -137,7 +137,6 @@ The three critic-free and critic-based options compare as follows.
 | Baseline | $V_\psi(s_t)$ per token | mean of the other $K - 1$ rewards | mean of all $K$ rewards, then divided by group std |
 | Credit assignment | per token via GAE | one advantage per response | one advantage per response |
 | KL to reference | per-token penalty in the reward | usually in the reward | separate term in the loss |
-| Off-policy reuse | clipped ratio, several epochs | typically on-policy, single step | clipped ratio, several epochs |
 | Gradient bias | from critic error | unbiased | rescaled by std and length normalization |
 
 ## Hidden biases in the GRPO objective
@@ -193,7 +192,7 @@ DAPO's **dynamic sampling** keeps sampling prompts and discards groups whose rew
 
 ### Clip-higher
 
-The PPO clip is symmetric: the ratio may move to $1 - \epsilon$ or $1 + \epsilon$. For a token with old probability $q$, the upper clip caps its new probability near $(1 + \epsilon) q$. If $q$ is small, this is a tiny absolute increase; if $q$ is large, the token can move almost to probability one. The symmetric clip thus makes it easy to sharpen already-likely tokens and hard to promote unlikely ones, which accelerates entropy collapse (discussed below). DAPO decouples the clip range into $\epsilon_{\mathrm{low}}$ and $\epsilon_{\mathrm{high}}$ with $\epsilon_{\mathrm{high}} \gt \epsilon_{\mathrm{low}}$, leaving more room for low-probability tokens to grow.
+The PPO clip is symmetric: the ratio may move to $1 - \epsilon$ or $1 + \epsilon$. For a token with old probability $q$, the upper clip caps its new probability near $(1 + \epsilon) q$. For small $q$ this is a tiny absolute increase, so the clip makes it easy to sharpen likely tokens and hard to promote unlikely ones, accelerating entropy collapse (discussed below). DAPO decouples the clip range into $\epsilon_{\mathrm{low}}$ and $\epsilon_{\mathrm{high}}$ with $\epsilon_{\mathrm{high}} \gt \epsilon_{\mathrm{low}}$, leaving more room for low-probability tokens to grow.
 
 ### Token-level loss aggregation
 
@@ -215,7 +214,7 @@ Several things happened without being asked for. Response length grew steadily d
 
 R1-Zero's reasoning was often hard to read and mixed languages. The full **R1** pipeline added a small "cold-start" supervised set of readable long chains of thought, reasoning-oriented RL with a language-consistency reward, rejection sampling to build a larger supervised set, and a final RL stage covering reasoning and general helpfulness. The report also found that distilling R1's outputs into smaller models by supervised fine-tuning worked well, and better than running the same RL directly on the small models.
 
-Later analyses, including the Dr. GRPO paper, have qualified the story. Some base models already exhibit self-reflection behaviours before any RL, and part of the length growth can come from the loss normalization described above. That the method works is not in doubt; exactly what it is teaching is still being worked out.
+Later analyses, including the Dr. GRPO paper, have qualified the story: some base models already show self-reflection before any RL, and part of the length growth can come from the loss normalization described above.
 
 ## Outcome versus process rewards
 
@@ -261,11 +260,11 @@ Generation dominates the cost of RLVR, because chains of thought are long and $K
 
 ### Train–inference mismatch
 
-Rollouts are typically generated by a fast inference engine and log-probabilities for training are recomputed by the training framework. Even with identical weights the two disagree slightly, because of different kernels, numerical precision, batching and sometimes quantization. The sampling distribution $\pi_{\mathrm{infer}}$ is then not the $\pi_{\theta_{\mathrm{old}}}$ in the ratio, so the update is silently off-policy. Over long sequences the discrepancies compound and can destabilize training. Fixes include importance weighting by $\pi_{\theta_{\mathrm{old}}} / \pi_{\mathrm{infer}}$ per token, truncated to bound its variance, and aligning precision between the two engines.
+Rollouts come from a fast inference engine, while training log-probabilities are recomputed by the training framework. Even with identical weights the two disagree slightly (different kernels, precision, batching), so the sampling distribution $\pi_{\mathrm{infer}}$ is not the $\pi_{\theta_{\mathrm{old}}}$ in the ratio and the update is silently off-policy; over long sequences this can destabilize training. Fixes include importance weighting by $\pi_{\theta_{\mathrm{old}}} / \pi_{\mathrm{infer}}$ per token, truncated to bound its variance, and aligning precision between the two engines.
 
 ## Test-time compute
 
-RLVR changes how a model uses compute at inference. A model trained to reason at length spends more tokens on harder problems, so response length becomes a knob: accuracy typically improves with the thinking budget, up to a point. This is **sequential** test-time compute. **Parallel** test-time compute samples many responses and aggregates them, by majority vote over final answers (self-consistency) or by reranking with a verifier or reward model. Pass@k is the ceiling for any such aggregation: if no sample is correct, no selection rule can recover.
+A model trained to reason at length spends more tokens on harder problems, and accuracy typically improves with the thinking budget, up to a point. This is **sequential** test-time compute. **Parallel** test-time compute samples many responses and aggregates them, by majority vote over final answers (self-consistency) or by reranking with a verifier or reward model. Pass@k is the ceiling for any such aggregation: if no sample is correct, no selection rule can recover.
 
 The two interact with training: sharpening raises pass@1, but if it lowers pass@k it also lowers the ceiling for parallel sampling.
 

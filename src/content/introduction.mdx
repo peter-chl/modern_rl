@@ -152,21 +152,25 @@ It is not obvious that a single policy can be best from every starting state at 
 <Result name="Existence of an optimal deterministic policy">
 In a finite MDP with $\gamma \lt 1$, $V^\ast$ and $Q^\ast$ are the unique solutions of the **Bellman optimality equations**
 $$
-V^\ast(s) = \max_a \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^\ast(s') \Big], \qquad
+V^\ast(s) = \max_a \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^\ast(s') \Big],
+$$
+$$
 Q^\ast(s, a) = r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, \max_{a'} Q^\ast(s', a').
 $$
 Any policy that is greedy with respect to $Q^\ast$, that is $\pi^\ast(s) \in \arg\max_a Q^\ast(s, a)$, is optimal. In particular there is an optimal policy that is deterministic and stationary.
 </Result>
 
-The optimality equation says: the value of a state is the value of the best action, assuming you act optimally afterwards. The uniqueness and existence claims follow from the contraction argument in the next section; that the greedy policy is optimal follows from the policy improvement theorem below. For episodic problems with a fixed horizon the same holds with policies allowed to depend on $t$ — or, as for language models, with $t$ already in the state.
+The optimality equation says that the value of a state is the value of the best action, assuming optimal behaviour afterwards. Existence and uniqueness of the fixed point follow from the contraction argument in the next section, and optimality of the greedy policy from the policy improvement theorem; we omit the remaining details. With a fixed horizon the same holds for policies that may depend on $t$ — or, as for language models, with $t$ already in the state.
 
-Two consequences matter later. First, knowing $Q^\ast$ is enough to act optimally, with no further model of the environment and a single maximization per step; this is the premise of value-based methods. Second, randomness is never *required* for optimality in an MDP. Stochastic policies are used anyway, because they explore, because they make the objective differentiable in $\theta$, and because a generative model is naturally a distribution.
+Two consequences matter later. Knowing $Q^\ast$ is enough to act optimally with one maximization per step and no model of the environment, which is the premise of value-based methods. And randomness is never *required* for optimality; stochastic policies are used anyway because they explore, because they make $J$ differentiable in $\theta$, and because a generative model is naturally a distribution.
 
 ## Dynamic programming
 
 When $P$ and $r$ are known, the Bellman equations can be solved by **dynamic programming**. Define two operators on functions $V : \mathcal{S} \to \mathbb{R}$:
 $$
-(T^\pi V)(s) = \sum_a \pi(a \mid s) \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V(s') \Big], \qquad
+(T^\pi V)(s) = \sum_a \pi(a \mid s) \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V(s') \Big],
+$$
+$$
 (T^\ast V)(s) = \max_a \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V(s') \Big].
 $$
 The Bellman equations say exactly that $V^\pi$ is a fixed point of $T^\pi$ and $V^\ast$ a fixed point of $T^\ast$.
