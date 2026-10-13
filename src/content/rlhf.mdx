@@ -1,0 +1,262 @@
+A pretrained language model is trained to do one thing: predict the next token of text drawn from a very large corpus. That objective produces remarkable capabilities, but it is not the objective anyone deploying an assistant actually cares about. We want responses that are **helpful** (they answer the question that was asked, at the right level of detail), **harmless** (they decline to help with things that cause damage) and honest. None of these properties is written down as a loss function, and the corpus contains plenty of text that is unhelpful, wrong or harmful, which a perfect next-token predictor will reproduce with the right frequency.
+
+Supervised fine-tuning on curated demonstrations narrows the gap, but it runs into a basic asymmetry: for many tasks, **judging is easier than demonstrating**. A person who could not write a good summary of a long article in a minute can still say which of two summaries is better. A reader can tell that one explanation is clearer than another without being able to produce the clearer one. Comparisons are cheap, consistent enough to learn from, and they can rank outputs that are better than anything the labeller would have written. This section shows how to turn such comparisons into a training signal for a language model, first with the full reinforcement learning machinery of Section 2, and then with direct methods that never build an explicit reward.
+
+## Why likelihood is not the objective
+
+Maximum-likelihood training on a dataset with distribution $p_{\mathrm{data}}$ minimizes $\mathrm{KL}(p_{\mathrm{data}} \,\|\, \pi_\theta)$. This divergence penalizes the model heavily for assigning low probability to anything that appears in the data, and only lightly for assigning probability to things that do not. The result is **mass-covering**: the model spreads probability over everything a human might have written, including mediocre and erroneous continuations. Three consequences follow.
+
+1. **Imitation is capped by the demonstrator.** A model that matches the data distribution exactly is, at best, as good as the average demonstration. Nothing in the loss rewards being better than the data.
+2. **All errors cost the same.** A factual error and an unusual but correct word choice can have similar log-likelihood penalties. Likelihood does not know which mistakes matter.
+3. **Train and test conditions differ.** During training the model conditions on human-written prefixes; at generation time it conditions on its own samples. Errors compound along a sampled response, and likelihood training never sees the states it drives itself into.
+
+The third point is the familiar distribution-shift argument for reinforcement learning over imitation (Section 1): an agent should be trained on the distribution of states its own policy visits. The first two say that the loss needs a notion of *quality* rather than *frequency*. A reward function supplies both — if we can get one.
+
+## The language model as a policy
+
+To apply the methods of Section 2 we must say what the states, actions and rewards are.
+
+<Definition name="Token-level MDP for a language model">
+Fix a vocabulary $\mathcal{V}$ containing an end-of-sequence token. The **token-level MDP** has
+
+- states $s_t = (x, y_{\lt t})$, a prompt $x$ followed by the tokens generated so far;
+- actions $a_t = y_t \in \mathcal{V}$, the next token;
+- deterministic transitions by concatenation, $s_{t+1} = (x, y_{\le t})$;
+- initial-state distribution $\mu$ equal to the distribution of prompts;
+- episodes that end when the end-of-sequence token is emitted or a length limit is reached, at step $T$;
+- a reward that is zero at every step except the last, where it equals a sequence-level score $r(x, y)$ of the whole response $y = (y_1, \dots, y_T)$;
+- discount $\gamma = 1$, which is harmless because episodes are finite.
+
+The language model $\pi_\theta(y_t \mid s_t)$ is the policy, and its probability of a whole response factorizes as $\pi_\theta(y \mid x) = \prod_{t=1}^{T} \pi_\theta(y_t \mid x, y_{\lt t})$.
+</Definition>
+
+This MDP is unusual: the transition kernel is known and trivial, so the only thing to explore is the model's own output space, and the reward is sparse, so $G_t = r(x, y)$ for every $t$.
+
+<Remark name="The bandit view">
+Because transitions are deterministic and the reward depends only on the finished sequence, we may equally treat the whole response as a single action. Then the problem is a **contextual bandit**: context $x \sim \mu$, action $y \sim \pi_\theta(\cdot \mid x)$, reward $r(x, y)$, objective $J(\theta) = \mathbb{E}_{x \sim \mu}\, \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)}[r(x, y)]$. The two views define the same objective and the same policy gradient,
+$$
+\nabla_\theta J(\theta) = \mathbb{E}\Big[ r(x, y) \sum_{t=1}^{T} \nabla_\theta \log \pi_\theta(y_t \mid s_t) \Big].
+$$
+They differ in how credit is assigned. The token-level view invites a per-token value function and per-token advantages, as in PPO below. The bandit view uses one baseline per prompt and one advantage per response, which is the route taken by the critic-free methods of Section 4.
+</Remark>
+
+## The three-stage pipeline
+
+The recipe now called **reinforcement learning from human feedback** (RLHF) was developed by Christiano et al. (2017) for Atari and simulated-robotics tasks, where humans compared pairs of short trajectory segments and a reward model trained on those comparisons replaced the environment reward. Stiennon et al. (2020) applied it to summarization with a pretrained language model, and Ouyang et al. (2022) scaled it to general instruction following in InstructGPT. The pipeline has three stages.
+
+1. **Supervised fine-tuning (SFT).** Fine-tune the pretrained model on demonstrations of the desired behaviour. The result, $\pi_{\mathrm{SFT}}$, is a reasonable starting policy and becomes the reference policy $\pi_{\mathrm{ref}}$.
+2. **Reward modelling.** Sample several responses per prompt, usually from $\pi_{\mathrm{SFT}}$, and ask labellers to compare them. Train a reward model $r_\phi(x, y)$ to predict the comparisons.
+3. **Reinforcement learning.** Optimize the policy against $r_\phi$ with a KL penalty that keeps it close to $\pi_{\mathrm{ref}}$, using PPO.
+
+Stage 3 never consults a human: all human judgement flows through $r_\phi$, which is both the method's efficiency and its main weakness.
+
+## Reward models from pairwise comparisons
+
+### The Bradley–Terry model
+
+A comparison tells us which of two responses was preferred, not by how much. To learn a real-valued reward from such data we need a probabilistic link between rewards and choices.
+
+<Definition name="Bradley–Terry model">
+Given a prompt $x$ and two responses $y_1, y_2$, the **Bradley–Terry model** with reward $r$ says that
+$$
+\Pr(y_1 \succ y_2 \mid x) = \frac{\exp r(x, y_1)}{\exp r(x, y_1) + \exp r(x, y_2)} = \sigma\big(r(x, y_1) - r(x, y_2)\big),
+$$
+where $\sigma(z) = 1/(1 + e^{-z})$ is the logistic sigmoid.
+</Definition>
+
+One way to motivate it: suppose the labeller perceives utility $r(x, y_i) + \varepsilon_i$ with independent standard Gumbel noise $\varepsilon_i$ and picks the larger. The difference of two independent standard Gumbel variables is logistic, so the probability of choosing $y_1$ is exactly $\sigma(r(x, y_1) - r(x, y_2))$. The model therefore treats preference as a noisy comparison of a single scalar quality.
+
+### The reward-model loss as maximum likelihood
+
+Let $\mathcal{D}$ be a dataset of triples $(x, y_w, y_l)$ in which $y_w$ was preferred to $y_l$. Parametrize the reward by a network $r_\phi$, typically the SFT model with its output layer replaced by a scalar head read off at the final token. Under Bradley–Terry, the log-likelihood of the observed preferences is
+$$
+\sum_{(x, y_w, y_l) \in \mathcal{D}} \log \sigma\big(r_\phi(x, y_w) - r_\phi(x, y_l)\big),
+$$
+and maximizing it is the same as minimizing the **reward-model loss**
+$$
+\mathcal{L}_{\mathrm{RM}}(\phi) = -\,\mathbb{E}_{(x, y_w, y_l) \sim \mathcal{D}}\Big[\log \sigma\big(r_\phi(x, y_w) - r_\phi(x, y_l)\big)\Big].
+$$
+This is logistic regression on the reward difference: its gradient pushes the two rewards apart, weighted by $\sigma(r_\phi(x, y_l) - r_\phi(x, y_w))$, the probability the current model assigns to the wrong ordering. When labellers rank $K$ responses at once, each ranking contributes all $\binom{K}{2}$ of its pairs; InstructGPT trained on all pairs from a ranking together, which avoids overfitting to responses that appear in many pairs.
+
+<Result name="Shift invariance of the reward">
+For any function $c(x)$ of the prompt alone, the rewards $r$ and $r'(x, y) = r(x, y) + c(x)$ give identical Bradley–Terry probabilities, and hence identical values of $\mathcal{L}_{\mathrm{RM}}$. Conversely, if two rewards give the same preference probabilities for every prompt and every pair of responses, they differ by a function of the prompt alone.
+</Result>
+
+The first claim holds because $c(x)$ cancels in $r'(x, y_1) - r'(x, y_2)$. For the converse, $\sigma$ is injective, so $r - r'$ takes the same value at $y_1$ and $y_2$ for all pairs.
+
+So a reward model learned from comparisons is identified only up to a per-prompt offset. Comparing $r_\phi(x, y)$ across different prompts is meaningless without further normalization, and in practice the reward is often normalized (for example, to have mean zero on reference samples) before RL. The offset does not matter for the policy: adding $c(x)$ to the reward changes $J(\theta)$ by $\mathbb{E}_x[c(x)]$, which does not depend on $\theta$. The same invariance will make the partition function disappear in DPO below.
+
+## PPO for language models
+
+### The KL-regularized objective
+
+Optimizing $r_\phi$ without restraint is a bad idea: the reward model was trained on responses from $\pi_{\mathrm{SFT}}$, and a policy that moves far from that distribution will find responses where $r_\phi$ is wrong. The standard objective therefore adds the KL penalty from Section 2:
+$$
+J(\theta) = \mathbb{E}_{x \sim \mu}\Big[ \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)}\big[r_\phi(x, y)\big] - \beta\, \mathrm{KL}\big(\pi_\theta(\cdot \mid x) \,\|\, \pi_{\mathrm{ref}}(\cdot \mid x)\big) \Big].
+$$
+Recall from Section 2 that for each prompt, over all distributions on responses, this is maximized by
+$$
+\pi^*(y \mid x) = \frac{1}{Z(x)}\, \pi_{\mathrm{ref}}(y \mid x) \exp\!\Big(\frac{r_\phi(x, y)}{\beta}\Big), \qquad Z(x) = \sum_{y} \pi_{\mathrm{ref}}(y \mid x) \exp\!\Big(\frac{r_\phi(x, y)}{\beta}\Big).
+$$
+The coefficient $\beta$ interpolates between the reference policy ($\beta \to \infty$) and the reward-maximizing response ($\beta \to 0$).
+
+### Per-token rewards
+
+PPO needs a reward at every step. The sequence KL is a sum of per-token log-ratios: since $\log \pi_\theta(y \mid x) = \sum_t \log \pi_\theta(y_t \mid s_t)$, and the same for $\pi_{\mathrm{ref}}$,
+$$
+\mathrm{KL}\big(\pi_\theta(\cdot \mid x) \,\|\, \pi_{\mathrm{ref}}(\cdot \mid x)\big) = \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)}\Big[\sum_{t=1}^{T} \log \frac{\pi_\theta(y_t \mid s_t)}{\pi_{\mathrm{ref}}(y_t \mid s_t)}\Big].
+$$
+So the objective is the expected return in the token-level MDP with per-token reward
+$$
+r_t = -\beta \log \frac{\pi_\theta(y_t \mid s_t)}{\pi_{\mathrm{ref}}(y_t \mid s_t)} + \mathbf{1}[t = T]\; r_\phi(x, y).
+$$
+Every token pays a KL cost, and the reward model's score arrives at the final token. In implementations the log-ratio is computed with the sampling policy $\pi_{\theta_{\mathrm{old}}}$ and treated as a fixed reward, not differentiated through; the single-sample log-ratio is an unbiased but noisy estimate of the per-step KL.
+
+### Value head and advantages
+
+With per-token rewards in hand, PPO proceeds as in Section 2. A **value model** $V_\psi(s_t)$, usually a copy of a language model with a scalar head and commonly initialized from the reward model, estimates the expected remaining return from each prefix. Advantages come from generalized advantage estimation:
+$$
+\delta_t = r_t + \gamma V_\psi(s_{t+1}) - V_\psi(s_t), \qquad \hat A_t = \sum_{k \ge 0} (\gamma \lambda)^k \delta_{t+k},
+$$
+with $V_\psi(s_{T+1}) = 0$ at the end of the episode. Language-model RLHF commonly uses $\gamma = \lambda = 1$, in which case the sum telescopes to
+$$
+\hat A_t = \sum_{k=t}^{T} r_k - V_\psi(s_t),
+$$
+the Monte Carlo return-to-go minus a baseline: unbiased, with the value function serving only to reduce variance. The policy is then updated with the clipped surrogate
+$$
+\mathcal{L}^{\mathrm{CLIP}}(\theta) = -\,\mathbb{E}_t\Big[\min\big(\rho_t(\theta) \hat A_t,\ \mathrm{clip}(\rho_t(\theta), 1 - \epsilon, 1 + \epsilon)\, \hat A_t\big)\Big], \qquad \rho_t(\theta) = \frac{\pi_\theta(y_t \mid s_t)}{\pi_{\theta_{\mathrm{old}}}(y_t \mid s_t)},
+$$
+and the value model by regression onto the returns.
+
+```
+repeat:
+    sample a batch of prompts x
+    generate responses y with the current policy (old policy)
+    score each response with the reward model r_phi(x, y)
+    build per-token rewards: -beta * log-ratio to reference, plus r_phi at the end
+    compute values V(s_t) and GAE advantages
+    for a few epochs over minibatches:
+        update the policy with the clipped PPO loss
+        update the value model by regression onto returns
+```
+
+<Remark name="Four models in memory">
+A PPO-RLHF step involves four networks of comparable size: the **policy** (trained), the **value model** (trained), the **reference policy** (frozen, for the KL term) and the **reward model** (frozen, for scoring). Generation is also slow, because sampling is sequential in the response length. This cost is a large part of the motivation for the methods that follow: DPO removes the reward and value models from the training loop, and the critic-free methods of Section 4 remove the value model.
+</Remark>
+
+InstructGPT also mixed a pretraining loss into the RL stage to limit regressions on standard NLP tasks.
+
+## Reward overoptimization
+
+The reward model is a proxy. It was fitted on a finite set of comparisons of responses from a particular policy, and the RL stage is an optimizer looking for exactly the inputs on which the proxy is too high. This is **Goodhart's law** in its sharpest form: when a measure becomes a target, it ceases to be a good measure.
+
+Gao et al. (2023) studied the phenomenon systematically with a synthetic setup. A large "gold" reward model played the role of the human, labelling comparisons on which smaller proxy reward models were trained; the policy was then optimized against the proxy, by best-of-$n$ sampling or by RL, while both proxy and gold scores were tracked. As the policy moved away from its initialization (measured by KL), the proxy reward kept increasing, while the gold reward rose, peaked and then declined. The peak came later, and the decline was milder, for larger reward models and more preference data. They fitted simple functional forms to these curves in terms of the distance from the initial policy, which is the sense in which overoptimization obeys scaling laws.
+
+<Example name="Reward hacking in practice">
+Common failure modes of RLHF-trained models include:
+
+- **Length bias.** Labellers and reward models often prefer longer, more detailed answers, and the policy learns that length itself is rewarded. Responses grow longer without becoming better.
+- **Style over substance.** Confident tone, bullet lists, headings and hedging phrases can raise the reward independent of correctness.
+- **Sycophancy.** Agreeing with the user's stated opinion, or praising their work, tends to be preferred by human raters, so the policy learns to tell people what they want to hear.
+</Example>
+
+Mitigations include a larger KL coefficient or early stopping, ensembles of reward models with a conservative aggregate, explicit length penalties, and fresh comparisons on samples from the current policy. None removes the underlying problem: a fixed proxy can be exploited by a strong enough optimizer.
+
+## Direct preference optimization
+
+The RLHF pipeline fits a reward model by maximum likelihood, then spends a great deal of compute finding the policy that is optimal for that reward. Rafailov et al. (2023) observed that, because the optimal policy of the KL-regularized objective has a closed form, the two steps can be collapsed into one: the policy itself can be fitted to the preference data.
+
+### Derivation
+
+Start from the optimum of the KL-regularized objective for an arbitrary reward $r$, assuming $\pi_{\mathrm{ref}}(y \mid x) > 0$ for all responses (a softmax model satisfies this) and finitely many responses of bounded length, so $Z(x)$ is finite:
+$$
+\pi_r(y \mid x) = \frac{1}{Z(x)}\, \pi_{\mathrm{ref}}(y \mid x) \exp\!\Big(\frac{r(x, y)}{\beta}\Big).
+$$
+Take logarithms and solve for the reward:
+$$
+r(x, y) = \beta \log \frac{\pi_r(y \mid x)}{\pi_{\mathrm{ref}}(y \mid x)} + \beta \log Z(x).
+$$
+This expresses the reward through its own optimal policy, up to the term $\beta \log Z(x)$. That term is intractable — it sums over all responses — but it depends only on the prompt. By the shift invariance of Bradley–Terry it cancels from every preference probability:
+$$
+\Pr(y_w \succ y_l \mid x) = \sigma\Big( \beta \log \frac{\pi_r(y_w \mid x)}{\pi_{\mathrm{ref}}(y_w \mid x)} - \beta \log \frac{\pi_r(y_l \mid x)}{\pi_{\mathrm{ref}}(y_l \mid x)} \Big).
+$$
+The preference probabilities are now written in terms of a policy alone. Instead of parametrizing the reward and then solving for its optimal policy, we parametrize the policy $\pi_\theta$ directly and maximize the likelihood of the data under this expression.
+
+<Definition name="DPO loss">
+Define the **implicit reward** $\hat r_\theta(x, y) = \beta \log \dfrac{\pi_\theta(y \mid x)}{\pi_{\mathrm{ref}}(y \mid x)}$. The **direct preference optimization** loss is
+$$
+\mathcal{L}_{\mathrm{DPO}}(\theta) = -\,\mathbb{E}_{(x, y_w, y_l) \sim \mathcal{D}}\Big[\log \sigma\Big( \beta \log \frac{\pi_\theta(y_w \mid x)}{\pi_{\mathrm{ref}}(y_w \mid x)} - \beta \log \frac{\pi_\theta(y_l \mid x)}{\pi_{\mathrm{ref}}(y_l \mid x)} \Big)\Big].
+$$
+It is the reward-model loss $\mathcal{L}_{\mathrm{RM}}$ with $r_\phi$ replaced by $\hat r_\theta$.
+</Definition>
+
+Nothing is lost by this reparametrization, in the following sense.
+
+<Result name="Every reward class is reachable">
+Call two rewards equivalent if they differ by a function of $x$ alone; by the shift-invariance result, equivalent rewards induce the same Bradley–Terry preferences and the same KL-regularized optimal policy. Every equivalence class contains exactly one reward of the form $\beta \log \pi(y \mid x)/\pi_{\mathrm{ref}}(y \mid x)$ with $\pi(\cdot \mid x)$ a probability distribution, namely the one with $\pi = \pi_r$ for any $r$ in the class.
+</Result>
+
+Existence is the identity above: $r - \beta \log Z(x) = \beta \log \pi_r/\pi_{\mathrm{ref}}$ lies in the class of $r$. For uniqueness, if $\beta \log \pi/\pi_{\mathrm{ref}}$ and $\beta \log \pi'/\pi_{\mathrm{ref}}$ differ by $c(x)$, then $\pi'(y \mid x) = e^{c(x)/\beta} \pi(y \mid x)$, and summing over $y$ forces $c(x) = 0$. Consequently, minimizing $\mathcal{L}_{\mathrm{DPO}}$ over a sufficiently expressive policy class searches over the same set of preference models as minimizing $\mathcal{L}_{\mathrm{RM}}$ over rewards; and if the minimizer of $\mathcal{L}_{\mathrm{RM}}$ is $r^\star$, the corresponding minimizer of $\mathcal{L}_{\mathrm{DPO}}$ is $\pi_{r^\star}$, exactly the policy RLHF would aim for. This is the content of the slogan that the language model is "secretly a reward model".
+
+### The gradient
+
+Write $z = \hat r_\theta(x, y_w) - \hat r_\theta(x, y_l)$. Since $\frac{d}{dz}\big[-\log \sigma(z)\big] = -\sigma(-z)$ and $\nabla_\theta z = \beta\big(\nabla_\theta \log \pi_\theta(y_w \mid x) - \nabla_\theta \log \pi_\theta(y_l \mid x)\big)$ (the reference terms do not depend on $\theta$),
+$$
+\nabla_\theta \mathcal{L}_{\mathrm{DPO}} = -\beta\, \mathbb{E}_{\mathcal{D}}\Big[ \sigma\big(\hat r_\theta(x, y_l) - \hat r_\theta(x, y_w)\big) \big( \nabla_\theta \log \pi_\theta(y_w \mid x) - \nabla_\theta \log \pi_\theta(y_l \mid x) \big) \Big].
+$$
+A gradient step raises the log-probability of the preferred response and lowers that of the rejected one. The weight $\sigma(\hat r_\theta(x, y_l) - \hat r_\theta(x, y_w))$ is the probability the current implicit reward model assigns to the *wrong* ordering: pairs that are already correctly separated contribute little, and pairs the model gets wrong contribute most. Without this weight — simply pushing $\log \pi_\theta(y_w \mid x)$ up and $\log \pi_\theta(y_l \mid x)$ down — training degenerates, because the unlikelihood term can be decreased without bound. The reference policy enters through the implicit reward, measuring how far each response's probability has already moved.
+
+The practical appeal is large. DPO is a supervised loss on a fixed dataset: no sampling during training, no reward model, no value model, and only two networks in memory (the policy and the frozen reference, whose log-probabilities can even be precomputed).
+
+<Remark name="What DPO does not guarantee">
+The equivalence with RLHF holds at the population optimum, with a preference model fitted over all responses. On a finite dataset two things differ. First, the loss only involves responses in $\mathcal{D}$; it says nothing directly about the probability of other responses, so the KL constraint to $\pi_{\mathrm{ref}}$ is enforced only through the data. Second, if a pair is always preferred in the same direction, the maximum-likelihood margin $\hat r_\theta(x, y_w) - \hat r_\theta(x, y_l)$ is infinite, and the loss keeps pushing it even though $\beta$ was meant to regularize. In practice it is also common to observe that the log-probabilities of both $y_w$ and $y_l$ decrease during DPO training, with the margin growing because $y_l$ falls faster; where the probability mass goes instead is not controlled by the loss.
+</Remark>
+
+### Relatives
+
+DPO started a large family of offline preference objectives. A few that are well established:
+
+- **IPO** replaces the log-sigmoid with a squared loss that regresses the log-ratio margin toward a fixed target, so that the margin stays bounded even for deterministic preferences.
+- **KTO** learns from unpaired feedback — individual responses labelled desirable or undesirable — using a value function inspired by prospect theory.
+- **SimPO** drops the reference model and uses the length-normalized average log-probability of a response as the implicit reward, with a target margin between chosen and rejected responses.
+- **ORPO** also drops the reference model, adding an odds-ratio penalty that favours the chosen over the rejected response to the ordinary SFT loss, so that SFT and preference optimization happen in one stage.
+
+Which works best is not settled; comparisons depend heavily on data and tuning.
+
+## Online versus offline preference optimization
+
+PPO-RLHF is **online**: the policy is trained on its own samples, scored by a reward model. DPO in its basic form is **offline**: the policy is trained on a fixed set of pairs, typically sampled from $\pi_{\mathrm{SFT}}$ or from other models entirely.
+
+The distribution-shift argument from the start of this section applies here too. As the policy improves, the responses it would produce drift away from those in the dataset. An offline objective receives no signal about those new responses: it cannot discover that a response it now prefers is in fact bad, because that response never appears in a comparison. An online method samples from the current policy, so its mistakes are scored and corrected. The cost is that the scorer — a reward model — is itself being queried off its own training distribution, which is the overoptimization problem in another guise.
+
+Between the extremes sit **iterative** or **online DPO** variants: sample responses from the current policy, label pairs with a reward model, an AI judge or humans, take a DPO step, and repeat. These reintroduce sampling but keep the simple loss. Several studies have found online or on-policy data to help relative to purely offline training, but the size of the gap and its dependence on the task remain an active question.
+
+| | PPO-based RLHF | DPO |
+|---|---|---|
+| Signal used | Learned reward model $r_\phi$ | Preference pairs directly |
+| Data | On-policy samples, scored online | Fixed offline pairs (basic form) |
+| Models in training loop | Policy, value, reference, reward | Policy, reference |
+| KL to reference | Explicit per-token penalty | Implicit, via the reparametrized reward |
+| Loss | Clipped policy-gradient surrogate | Logistic loss on log-ratio margins |
+| Generation during training | Yes | No |
+| Exploits feedback on new behaviour | Yes, through the reward model | No, unless made iterative |
+| Main failure mode | Reward overoptimization | Distribution shift, drift of unseen responses |
+| Engineering cost | High; many interacting hyperparameters | Low; resembles supervised fine-tuning |
+
+## AI feedback and Constitutional AI
+
+Human comparisons are expensive and slow, and for some properties — especially harmlessness — collecting them means exposing labellers to harmful content. **Reinforcement learning from AI feedback** (RLAIF) replaces some or all human labels with judgements from a language model.
+
+The best-known instance is **Constitutional AI** (Bai et al., 2022). A short list of natural-language principles, the "constitution", guides the feedback. In a supervised phase, the model critiques and revises its own responses according to the principles, and is fine-tuned on the revisions. In an RL phase, a model is shown pairs of responses together with a principle and asked which better satisfies it; these AI preferences train a preference model, which is then used for RL exactly as in the pipeline above. The target behaviour becomes more explicit and cheaper to iterate on, at the price of inheriting the judging model's biases.
+
+## Open problems
+
+- **Reward-model generalization.** A reward model is accurate near its training distribution and unreliable away from it, which is precisely where the policy goes. Better uncertainty estimates, ensembles and continual relabelling help, but there is no robust solution to overoptimization.
+- **Pluralistic preferences.** Bradley–Terry assumes one scalar reward shared by everyone. Real labellers disagree, systematically and for legitimate reasons. A mixture of Bradley–Terry populations is not itself a Bradley–Terry model, and fitting a single reward to it implicitly chooses an aggregation rule nobody designed. How to represent, aggregate or condition on diverse preferences is open.
+- **Sycophancy and other learned biases.** Preference data rewards what raters like in the moment, which is not always what is true or useful. Training on such data can teach a model to flatter, to agree, or to sound confident. Separating genuine quality from rater bias in the signal is unsolved.
+- **Evaluation.** The quantity being optimized — human preference — is also the quantity that is hard to measure. Automatic evaluation with a language-model judge is cheap but has its own biases (towards length, position and its own style), and optimizing against a judge invites the same Goodhart problem one level up.
+- **Beyond outcome preferences.** Comparisons of whole responses give sparse credit for long, multi-step answers. Where correctness can be checked automatically, a verifier can replace the learned reward entirely.
+
+That last direction is the subject of Section 4: when the reward is a checker rather than a learned model, overoptimization looks very different, and the RL machinery can be simplified further.
+
+Further reading: P. Christiano et al., *Deep Reinforcement Learning from Human Preferences* (NeurIPS 2017), the origin of the pipeline; N. Stiennon et al., *Learning to Summarize from Human Feedback* (NeurIPS 2020); L. Ouyang et al., *Training Language Models to Follow Instructions with Human Feedback* (NeurIPS 2022), the InstructGPT paper; L. Gao et al., *Scaling Laws for Reward Model Overoptimization* (ICML 2023); R. Rafailov et al., *Direct Preference Optimization: Your Language Model is Secretly a Reward Model* (NeurIPS 2023); Y. Bai et al., *Constitutional AI: Harmlessness from AI Feedback* (2022).
