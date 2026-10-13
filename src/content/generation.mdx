@@ -26,7 +26,7 @@ A **denoising diffusion probabilistic model** (DDPM) fixes a forward noising pro
 $$
 q(x_t \mid x_{t-1}) = \mathcal{N}\big(\sqrt{\alpha_t}\, x_{t-1},\, (1 - \alpha_t) I\big), \qquad q(x_t \mid x_0) = \mathcal{N}\big(\sqrt{\bar\alpha_t}\, x_0,\, (1 - \bar\alpha_t) I\big).
 $$
-(The schedule is written with $\alpha_t$ rather than the customary $\beta_t$, which is reserved for the KL coefficient.) So $x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1 - \bar\alpha_t}\, \varepsilon$ with $\varepsilon \sim \mathcal{N}(0, I)$. A network $\varepsilon_\theta(x_t, t, c)$ is trained to predict the noise,
+(We avoid the customary $\beta_t$, reserved here for the KL coefficient.) So $x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1 - \bar\alpha_t}\, \varepsilon$ with $\varepsilon \sim \mathcal{N}(0, I)$. A network $\varepsilon_\theta(x_t, t, c)$ is trained to predict the noise,
 $$
 \mathcal{L}_{\mathrm{simple}}(\theta) = \mathbb{E}_{t,\, x_0,\, \varepsilon} \big\| \varepsilon - \varepsilon_\theta(x_t, t, c) \big\|^2 ,
 $$
@@ -72,7 +72,7 @@ Fix a diffusion model with $T$ steps and a reward $r(x_0, c)$. The **denoising M
 - reward $r(s_k, a_k) = r(x_0, c)$ at the last step (when $t = 1$) and $0$ otherwise, with $\gamma = 1$.
 </Definition>
 
-The trajectory of this MDP is the sampling chain, its return is $r(x_0, c)$, and $J(\theta)$ above is its expected return. The policy is Gaussian with explicit log-probability, so the machinery of Section 2 applies without change. Unlike the token MDP of Section 3, actions are continuous and high-dimensional (a whole latent image) and the horizon is fixed by the sampler. The reward is sparse in the extreme: every step receives the same terminal signal, and nothing tells the algorithm which of the fifty denoising steps made the cubes red.
+The trajectory of this MDP is the sampling chain, its return is $r(x_0, c)$, and $J(\theta)$ above is its expected return. The policy is Gaussian with explicit log-probability, so the machinery of Section 2 applies without change. Unlike the token MDP of Section 3, actions are continuous and high-dimensional (a whole latent image) and the horizon is fixed by the sampler. The reward is extremely sparse: nothing says which of the fifty denoising steps made the cubes red.
 
 ## Policy gradients over the sampling chain
 
@@ -96,7 +96,7 @@ Each per-step score is explicit:
 $$
 \nabla_\theta \log p_\theta(x_{t-1} \mid x_t, c) = \frac{1}{\sigma_t^2}\, \big( \nabla_\theta \mu_\theta(x_t, t, c) \big)^{\!\top} \big( x_{t-1} - \mu_\theta(x_t, t, c) \big) .
 $$
-It pushes the predicted mean towards the drawn sample in proportion to the final reward. As in Section 2, $r$ is replaced by an advantage $\hat A = r - b(c)$ with a baseline; DDPO normalizes rewards (it tracks reward statistics separately for each prompt) so that a uniformly easy prompt does not dominate.
+It pushes the predicted mean towards the drawn sample in proportion to the final reward. As in Section 2, $r$ is replaced by an advantage $\hat A = r - b(c)$ with a baseline; DDPO normalizes rewards using per-prompt statistics.
 
 This plain estimator needs fresh samples for every gradient step. The importance-sampled variant reuses each batch for several updates, as PPO does. With chains sampled from $p_{\theta_{\mathrm{old}}}$ and the per-step ratio
 $$
@@ -106,7 +106,7 @@ the surrogate is the clipped PPO objective summed over denoising steps,
 $$
 L^{\mathrm{CLIP}}(\theta) = \mathbb{E}_{\theta_{\mathrm{old}}} \Big[ \sum_{t=1}^{T} \min\big( \rho_t(\theta)\, \hat A,\; \mathrm{clip}(\rho_t(\theta), 1 - \epsilon, 1 + \epsilon)\, \hat A \big) \Big].
 $$
-Every step of a chain shares the same $\hat A$. As with PPO for language models, using per-step ratios instead of the product $\prod_t \rho_t$ is an approximation that is accurate only when $\theta$ stays near $\theta_{\mathrm{old}}$; the clipping is what keeps it there.
+Every step of a chain shares the same $\hat A$. Using per-step ratios instead of the product $\prod_t \rho_t$ is accurate only near $\theta_{\mathrm{old}}$, which clipping enforces.
 
 Black et al. demonstrated DDPO on compressibility, incompressibility, an aesthetic predictor, and prompt alignment judged by a vision-language model. They also observed reward overoptimization.
 
@@ -139,7 +139,7 @@ When $r$ is differentiable, there is a lower-variance route. Fix the initial noi
 $$
 \nabla_\theta J(\theta) = \mathbb{E}_{c,\, x_T,\, z_{1:T}} \Big[ \big( \partial_\theta F_\theta(x_T, z_{1:T}, c) \big)^{\!\top} \nabla_{x_0} r(x_0, c) \Big].
 $$
-This is the reparameterization (pathwise) gradient. It uses the direction in which the reward improves, not just its value, and it works equally well for deterministic samplers: DDIM or a flow ODE is just a $F_\theta$ with no $z$ terms.
+This pathwise gradient uses the direction in which the reward improves, not just its value, and works for deterministic samplers: DDIM or a flow ODE is just a $F_\theta$ with no $z$ terms.
 
 The cost is memory and stability: backpropagating through $T$ steps stores $T$ copies of a large network's activations and multiplies $T$ Jacobians. Three related methods handle this differently.
 
