@@ -1,6 +1,6 @@
 Section 3 trained language models against a reward model learned from human comparisons. That reward is a proxy: it is only as good as the comparisons it was fitted to, and a policy optimized hard against it finds the places where it is wrong. For a large and important class of tasks there is a better option. If the task has an answer that can be **checked** — a number that either equals the reference or does not, a program that either passes its tests or does not, a proof that a proof assistant either accepts or rejects — then the reward can be computed by a program instead of predicted by a network.
 
-This section studies reinforcement learning against such programmatic rewards, usually called **reinforcement learning with verifiable rewards** (RLVR). The policy-gradient machinery is the same as in Section 2, but the setting changes which parts of it matter. Rewards are sparse, binary and arrive only at the end of a long response; the response itself contains a chain of reasoning that nobody supervises directly; and the cheapest source of variance reduction is not a learned critic but other samples for the same prompt. These features lead to GRPO and its relatives, to a set of subtle biases in how their losses are normalized, and to an unsettled question about what RL actually adds to a pretrained model.
+This section studies reinforcement learning against such programmatic rewards, usually called **reinforcement learning with verifiable rewards** (RLVR). The policy-gradient machinery is the same as in Section 2, but the setting changes which parts of it matter. Rewards are sparse, typically binary, and arrive only at the end of a long response; the response itself contains a chain of reasoning that nobody supervises directly; and the cheapest source of variance reduction is not a learned critic but other samples for the same prompt. These features lead to GRPO and its relatives, to a set of subtle biases in how their losses are normalized, and to an unsettled question about what RL actually adds to a pretrained model.
 
 ## Verifiable rewards
 
@@ -75,7 +75,7 @@ r_i - \bar r = \frac{K - 1}{K} \big( r_i - b_i \big)
 $$
 holds pointwise, so the mean-baseline estimator is exactly $\frac{K-1}{K}$ times the leave-one-out estimator. $\square$
 
-The mean baseline fails to be unbiased only because $\bar r$ contains $r_i$ itself, which correlates with $\nabla_\theta \log \pi_\theta(y^{(i)} \mid x)$. The damage is a constant rescaling, which can be absorbed into the learning rate or undone by multiplying by $K/(K-1)$. This leave-one-out construction was proposed for REINFORCE by Kool et al. (2019), and Ahmadian et al. (2024) revived it for language models as **RLOO**, arguing that for fine-tuning a strong pretrained model, the variance-reduction machinery of PPO is largely unnecessary and REINFORCE with this baseline is competitive at lower cost.
+The mean baseline fails to be unbiased only because $\bar r$ contains $r_i$ itself, which correlates with $\nabla_\theta \log \pi_\theta(y^{(i)} \mid x)$. The damage is a constant rescaling, absorbed into the learning rate or undone by the factor $K/(K-1)$. The leave-one-out construction for REINFORCE is due to Kool et al. (2019); Ahmadian et al. (2024) revived it for language models as **RLOO**, arguing that when fine-tuning a strong pretrained model much of PPO's variance-reduction machinery is unnecessary.
 
 A different critic-free choice is **ReMax**, which uses as baseline the reward of the greedy (argmax) decode for the same prompt. The greedy response is a deterministic function of $x$ and $\theta$, so it is also a valid baseline, at the cost of one extra generation per prompt.
 
@@ -100,9 +100,9 @@ $$
 
 For $u = \pi_{\mathrm{ref}}/\pi_\theta$ at a token sampled from $\pi_\theta$, $\mathbb{E}[u - 1] = 0$ and $\mathbb{E}[-\log u]$ is the per-token KL, so $\hat k = u - 1 - \log u$ is an unbiased estimator of $\mathrm{KL}(\pi_\theta \,\|\, \pi_{\mathrm{ref}})$ that, unlike $-\log u$, is never negative. (Strictly, tokens come from $\pi_{\theta_{\mathrm{old}}}$, which is close to $\pi_\theta$ within one round of updates.)
 
-Compared with Section 3's PPO, the KL term has moved. There, the per-token KL penalty was subtracted from the reward and so entered the advantages and the critic's targets. In GRPO the advantage depends only on the verifier, and the KL term is a separate regularizer in the loss, differentiated directly.
+Compared with Section 3's PPO, the KL term has moved: there it was subtracted from the reward and entered the advantages; here the advantage depends only on the verifier and the KL term is a separate regularizer in the loss.
 
-The numerator $r_i - \mathrm{mean}$ is the mean baseline analysed above, so before the other modifications the update is a rescaled REINFORCE with a nearly unbiased baseline. The denominator and the $1/|y^{(i)}|$ factor are another matter, and are the subject of the next section.
+The numerator $r_i - \mathrm{mean}$ is the mean baseline analyzed above, so before the other modifications the update is a rescaled REINFORCE with a nearly unbiased baseline. The denominator and the $1/|y^{(i)}|$ factor are another matter, and are the subject of the next section.
 
 ```
 GRPO (one iteration)
@@ -128,7 +128,7 @@ repeat M times (optionally over minibatches):
     take a gradient step on loss
 ```
 
-The three critic-free and critic-based options compare as follows.
+The three methods compare as follows.
 
 | | PPO (Section 3) | RLOO | GRPO |
 |---|---|---|---|
@@ -174,7 +174,7 @@ This is REINFORCE with the reward divided by the length, which biases the object
 - When $\hat A_i \gt 0$, a shorter correct response is reinforced more strongly than a longer one.
 - When $\hat A_i \lt 0$, a longer incorrect response is penalized more weakly per token than a shorter one.
 
-The second effect means that, among wrong answers, the policy is pushed less hard away from long ones, so incorrect responses can grow in length without any corresponding gain in accuracy. Some of the growth in response length observed during RLVR training may therefore be an artefact of the loss rather than a sign of more reasoning. Dr. GRPO replaces $1/|y^{(i)}|$ by a constant (the same for every response), which recovers an unbiased REINFORCE-style gradient up to scale.
+The second effect lets incorrect responses grow longer without any gain in accuracy, so some of the length growth seen in RLVR training may be an artifact of the loss rather than a sign of more reasoning. Dr. GRPO replaces $1/|y^{(i)}|$ by a constant (the same for every response), which recovers an unbiased REINFORCE-style gradient up to scale.
 
 ## DAPO: making group sampling efficient
 
