@@ -98,7 +98,7 @@ $$
 $$
 In words: push the predicted mean towards the sample that was actually drawn, in proportion to how good the final image turned out to be. As in Section 2, $r$ is replaced by an advantage $\hat A = r - b(c)$ with a baseline; DDPO normalizes rewards (it tracks reward statistics separately for each prompt) so that a uniformly easy prompt does not dominate.
 
-The plain estimator, called DDPO with a score-function estimator, needs fresh samples for every gradient step. The second variant reuses each batch of chains for several updates, as PPO does. With chains sampled from $p_{\theta_{\mathrm{old}}}$ and the per-step ratio
+This plain estimator needs fresh samples for every gradient step. The importance-sampled variant reuses each batch for several updates, as PPO does. With chains sampled from $p_{\theta_{\mathrm{old}}}$ and the per-step ratio
 $$
 \rho_t(\theta) = \frac{p_\theta(x_{t-1} \mid x_t, c)}{p_{\theta_{\mathrm{old}}}(x_{t-1} \mid x_t, c)},
 $$
@@ -108,7 +108,7 @@ L^{\mathrm{CLIP}}(\theta) = \mathbb{E}_{\theta_{\mathrm{old}}} \Big[ \sum_{t=1}^
 $$
 Every step of a chain shares the same $\hat A$. As with PPO for language models, using per-step ratios instead of the product $\prod_t \rho_t$ is an approximation that is accurate only when $\theta$ stays near $\theta_{\mathrm{old}}$; the clipping is what keeps it there.
 
-Black et al. demonstrated DDPO on compressibility, incompressibility, an aesthetic predictor, and prompt alignment scored by a vision-language model that describes the generated image, which is then compared to the prompt. They also observed reward overoptimization.
+Black et al. demonstrated DDPO on compressibility, incompressibility, an aesthetic predictor, and prompt alignment judged by a vision-language model. They also observed reward overoptimization.
 
 ### DPOK and the KL penalty over the chain
 
@@ -143,9 +143,9 @@ This is the reparameterization (pathwise) gradient. It uses the direction in whi
 
 The cost is memory and stability. Backpropagating through all $T$ steps stores activations of $T$ copies of a large network and multiplies $T$ Jacobians, which can explode or vanish. Three closely related methods handle this differently.
 
-- **DRaFT** (Clark et al., 2023) backpropagates through the full chain using gradient checkpointing and low-rank (LoRA) adapters, and introduces **DRaFT-K**, which truncates the backward pass to the last $K$ denoising steps: $x_K$ is treated as a constant and only the final $K$ steps are differentiated. Small $K$, even $K = 1$, was found to work well.
-- **AlignProp** (Prabhudesai et al., 2023) also backpropagates end to end through the sampler with LoRA and checkpointing, and truncates the backward pass at a randomly chosen number of steps, which saves memory and varies which steps receive gradient.
-- **ReFL** (reward feedback learning), introduced with ImageReward by Xu et al. (2023), samples to a randomly chosen late step $t$, predicts $\hat x_0$ from $x_t$ directly with the one-step denoiser estimate, and backpropagates the reward of $\hat x_0$ through that single prediction. It mixes this with the ordinary denoising loss on real data as a regularizer.
+- **DRaFT** (Clark et al., 2023) backpropagates through the full chain with gradient checkpointing and LoRA adapters, and introduces **DRaFT-K**, which truncates the backward pass to the last $K$ denoising steps ($x_K$ is treated as a constant); even $K = 1$ works well.
+- **AlignProp** (Prabhudesai et al., 2023) similarly uses LoRA and checkpointing, truncating the backward pass after a randomly chosen number of steps.
+- **ReFL** (reward feedback learning), introduced with ImageReward by Xu et al. (2023), samples to a randomly chosen late step $t$, forms the one-step estimate $\hat x_0$ from $x_t$, and backpropagates the reward of $\hat x_0$ through that single prediction, mixed with the ordinary denoising loss as a regularizer.
 
 Truncation makes the gradient biased: the early steps, which decide composition and layout, receive no signal, so the methods are better at changing texture, colour and style than global structure. The large and accurate gradient is also a liability. Following a reward network's pixel gradient finds its adversarial directions quickly. **Reward hacking** shows up sooner and more severely with reward backpropagation than with policy gradients; early stopping, KL or weight-space regularization towards the reference, and interpolating fine-tuned with reference weights are common defences.
 
@@ -159,7 +159,7 @@ $$
 $$
 *Approximation 1:* the joint KL upper-bounds the image KL (the result above), so this is a stronger regularizer than the one in the original problem.
 
-**Step 2: DPO on chains.** Exactly as in Section 3, the optimum is $p^*(x_{0:T} \mid c) \propto p_{\mathrm{ref}}(x_{0:T} \mid c) \exp(R(c, x_{0:T}) / \beta)$, so the reward can be written in terms of the chain log-ratio, and the Bradley–Terry likelihood of a preference pair becomes a function of $\beta \log \frac{p_\theta(x_{0:T} \mid c)}{p_{\mathrm{ref}}(x_{0:T} \mid c)}$ evaluated on chains ending in $x_0^w$ and $x_0^l$. Since the data contain only the final images, the log-ratios are averaged over chains $x_{1:T} \sim p_\theta(x_{1:T} \mid x_0, c)$.
+**Step 2: DPO on chains.** Exactly as in Section 3, the optimum is $p^*(x_{0:T} \mid c) \propto p_{\mathrm{ref}}(x_{0:T} \mid c) \exp(R(c, x_{0:T}) / \beta)$, so the reward can be written in terms of the chain log-ratio, and the Bradley–Terry likelihood of a preference pair becomes a function of $\beta \log \frac{p_\theta(x_{0:T} \mid c)}{p_{\mathrm{ref}}(x_{0:T} \mid c)}$ evaluated on chains ending in $x_0^w$ and $x_0^l$. Since the data contain only final images, the log-ratios are averaged over $x_{1:T} \sim p_\theta(x_{1:T} \mid x_0, c)$.
 
 **Step 3: Jensen.** The expectation sits inside $\log \sigma$. Because $-\log \sigma$ is convex, moving the expectation outside gives an upper bound on the loss. *Approximation 2:* minimize this bound.
 
@@ -231,7 +231,7 @@ $$
 $$
 Every step of chain $i$ uses $\hat A^{(i)}$ in the clipped per-step surrogate, with a closed-form Gaussian KL penalty to the reference. No critic over noisy latents is needed.
 
-A practical observation in the same paper is **denoising reduction**: training-time sampling can use many fewer steps than inference-time sampling. The rollouts are lower quality, but the relative ranking within a group is what drives learning, and the improvement transfers to the full-step sampler at test time. Liu et al. applied Flow-GRPO to compositional generation checked by an object detector, to text rendering scored by OCR, and to a human-preference reward model.
+A practical observation in the same paper is **denoising reduction**: training-time sampling can use many fewer steps than inference-time sampling. Rollouts are worse, but the within-group ranking still drives learning and the gains transfer to the full sampler. Liu et al. applied Flow-GRPO to compositional generation checked by an object detector, to text rendering scored by OCR, and to a human-preference reward model.
 
 DanceGRPO (Xue et al., 2025) pursued the same SDE reformulation with group-relative advantages across both diffusion and rectified-flow models and extended it to text-to-video generation.
 
@@ -251,13 +251,11 @@ Non-differentiable rewards (OCR, detectors, vision-language judges, compressibil
 
 ## Reward models for generation
 
-The reward model is usually the weakest link, and most failures trace back to it.
-
-- **CLIP score**: cosine similarity between CLIP embeddings of image and prompt. Cheap and differentiable, but weak on counting, spatial relations, attribute binding and text.
+- **CLIP score**: image–prompt embedding similarity. Cheap and differentiable, but weak on counting, spatial relations and text.
 - **Aesthetic predictors**: a small head on frozen image embeddings regressed onto human ratings. Prompt-agnostic by construction.
 - **Human-preference models**: PickScore (trained on the Pick-a-Pic preferences), HPS (Human Preference Score) and ImageReward are image–text scorers fine-tuned from pairwise human judgements. They inherit the biases of their annotators and prompts.
-- **Vision-language models as judges**: ask a VLM whether the image matches the prompt, or to answer generated questions about it. Flexible and compositional; slow, non-differentiable, and subject to the hallucination problems of Section 6.
-- **Programmatic checks**: OCR edit distance for text rendering, object detectors for counts, colours and positions. Close to the verifiable rewards of Section 4, and correspondingly harder to hack, though detectors can be fooled too.
+- **Vision-language models as judges**: ask a VLM whether the image matches the prompt, or to answer generated questions about it. Flexible but slow, non-differentiable, and prone to the hallucinations of Section 6.
+- **Programmatic checks**: OCR edit distance for text rendering, object detectors for counts, colours and positions. The analogue of the verifiable rewards of Section 4.
 
 ### Reward hacking and regularization
 
@@ -267,15 +265,15 @@ The defences parallel Section 3: a KL penalty to the reference (per-step as in D
 
 ## Video generation
 
-Video models are diffusion or flow models over a space-time latent, so every method above applies in principle.
+Video models are diffusion or flow models over a space-time latent, so every method above applies in principle, but:
 
-- **Cost per sample.** One rollout is a full video generation. Group-based methods need several per prompt, and reward backpropagation through a video sampler is memory-bound. Denoising reduction, truncation, LoRA, and training at low resolution or short duration are standard economies.
+- **Cost per sample.** One rollout is a full video generation, and group methods need several per prompt. Fewer denoising steps, truncation, LoRA, and low resolution or short clips are standard economies.
 - **Rewards.** Per-frame image rewards miss what makes video good or bad: temporal consistency (identities and objects that persist), plausible motion, and physical coherence. Video reward models are less mature than image ones, and a model optimized for per-frame aesthetics can learn to reduce motion, since a static video scores well frame by frame.
-- **Long horizons.** Long videos are often generated in chunks or autoregressively over time, which adds a second sequential structure on top of denoising. Credit assignment across chunks, and keeping rewards from favouring short-range consistency at the expense of the overall narrative, are largely unsolved.
+- **Long horizons.** Long videos are often generated in chunks, adding a second sequential structure on top of denoising; credit assignment across chunks is largely unsolved.
 
 ## Autoregressive image models
 
-Not every image generator is a diffusion model. Autoregressive models tokenize images with a discrete tokenizer and generate tokens one at a time, often inside the same transformer that handles text. For these models the policy is literally the token policy of Section 3: $\log \pi_\theta(y \mid x)$ is a sum of token log-probabilities, and PPO, GRPO and DPO apply without any of the reformulations of this section.
+Autoregressive models tokenize images with a discrete tokenizer and generate tokens one at a time. For these models the policy is literally the token policy of Section 3: $\log \pi_\theta(y \mid x)$ is a sum of token log-probabilities, and PPO, GRPO and DPO apply without any of the reformulations of this section.
 
 ## Open problems
 
