@@ -1,0 +1,282 @@
+Section 3 trained language models against a reward model learned from human comparisons. That reward is a proxy: it is only as good as the comparisons it was fitted to, and a policy optimized hard against it finds the places where it is wrong. For a large and important class of tasks there is a better option. If the task has an answer that can be **checked** — a number that either equals the reference or does not, a program that either passes its tests or does not, a proof that a proof assistant either accepts or rejects — then the reward can be computed by a program instead of predicted by a network.
+
+This section studies reinforcement learning against such programmatic rewards, usually called **reinforcement learning with verifiable rewards** (RLVR). The policy-gradient machinery is the same as in Section 2, but the setting changes which parts of it matter. Rewards are sparse, binary and arrive only at the end of a long response; the response itself contains a chain of reasoning that nobody supervises directly; and the cheapest source of variance reduction is not a learned critic but other samples for the same prompt. These features lead to GRPO and its relatives, to a set of subtle biases in how their losses are normalized, and to an unsettled question about what RL actually adds to a pretrained model.
+
+## Verifiable rewards
+
+<Definition name="Verifier">
+A **verifier** for a task is a deterministic program $v(x, y)$ that takes a prompt $x$ and a complete response $y$ and returns a score, usually in $\lbrace 0, 1 \rbrace$. The **verifiable reward** is $r(x, y) = v(x, y)$, possibly plus small shaping terms such as a format bonus.
+</Definition>
+
+The standard examples:
+
+- **Mathematics with final answers.** The prompt carries a reference answer $a^\star(x)$. The verifier extracts the final answer from $y$ (for example, the contents of a designated box or tag), normalizes it, and checks equivalence with $a^\star(x)$, by string matching or symbolic comparison.
+- **Code with unit tests.** The verifier runs the program in $y$ against a test suite in a sandbox. The reward is $1$ if all tests pass, or the fraction that pass.
+- **Formal proofs.** The response is a proof in a system such as Lean, and the verifier is the proof checker. This is the strongest kind of verifier: acceptance means the statement is proved.
+- **Format and instruction constraints.** "Answer in exactly three bullet points", "respond in JSON matching this schema", "put the reasoning inside these tags". Each constraint is a predicate on $y$ that a short program can evaluate.
+
+What these have in common is an asymmetry: producing a correct answer is hard, checking one is easy. That asymmetry is what lets RL improve the model, because the training signal does not require anyone to know how the answer was found.
+
+<Remark name="Hard to hack is not unhackable">
+A verifier removes the failure mode of Section 3 in which the policy exploits errors of a learned network. It does not remove reward hacking. A policy optimizes whatever the program actually computes, and the program is rarely exactly the intended specification:
+
+- An answer extractor that takes the last number in the response rewards listing many candidate numbers; a lenient equivalence check can accept answers that are not equivalent.
+- A test suite with few tests rewards programs that special-case the visible inputs; an agent with file-system access may be able to edit the tests or the harness instead of the solution.
+- Answer-only rewards cannot distinguish a correct answer reached by sound reasoning from one reached by flawed reasoning or a lucky guess. On multiple-choice or small-answer-space problems, guessing earns real reward.
+- Format rewards are easily maximized in ways that satisfy the letter of the constraint.
+
+Only a sound and complete checker, like a proof assistant with escape hatches disabled, is genuinely unhackable, and even then the policy may learn to prefer statements it can prove over ones it was asked to prove if the task allows that. In practice verifiers must be audited the way reward models are, by reading samples from the trained policy.
+</Remark>
+
+## The RLVR setup
+
+As in Section 3, a language model is a policy over tokens. The state is $s_t = (x, y_{\lt t})$, the action is the next token $y_t$, the transition appends $y_t$ deterministically, and an episode ends at an end-of-sequence token or a length limit. Take $\gamma = 1$.
+
+<Definition name="RLVR objective">
+Given a prompt distribution $\mathcal{D}$, a verifiable reward $r(x, y)$, a reference policy $\pi_{\mathrm{ref}}$ (usually the initial model) and $\beta \ge 0$, RLVR maximizes
+$$
+J(\theta) = \mathbb{E}_{x \sim \mathcal{D}}\Big[ \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)} \big[ r(x, y) \big] - \beta\, \mathrm{KL}\big( \pi_\theta(\cdot \mid x) \,\|\, \pi_{\mathrm{ref}}(\cdot \mid x) \big) \Big].
+$$
+The reward is received only at the final step $T$: $r_t = 0$ for $t \lt T$ and $r_T = r(x, y)$, so $G_t = r(x, y)$ for every $t$.
+</Definition>
+
+Two features distinguish this from RLHF. First, $\beta$ is often small or zero. In RLHF the KL term protects against exploiting the reward model; a verifier needs less protection, and the KL term mostly serves to keep the policy fluent and stable. Second, and more importantly, **the chain of thought is part of the action**. The response $y$ consists of a long stretch of reasoning followed by a short final answer, and the verifier looks only at the answer. Nothing rewards or penalizes individual reasoning steps; the policy is free to discover whatever intermediate text makes correct answers more likely. A typical prompt template asks the model to reason inside one pair of tags and answer inside another, and a format reward enforces the template.
+
+For a binary verifier, write $p_\theta(x) = \Pr_{y \sim \pi_\theta(\cdot \mid x)}[r(x, y) = 1]$ for the per-prompt success probability. Then, ignoring the KL term, $J(\theta) = \mathbb{E}_x[p_\theta(x)]$, the average pass rate. This form will be useful when analyzing what different estimators actually optimize.
+
+## Dropping the critic
+
+The PPO recipe for language models (Section 3) trains a value network $V_\psi(s_t)$, usually initialized from the reward model or the policy, and computes per-token advantages with GAE. In RLVR this critic is expensive and buys little:
+
+- **Memory and compute.** The critic is another model of comparable size, with its own optimizer state and its own forward and backward passes.
+- **Values on token states are hard to learn.** $V^\pi(s_t)$ is the probability that the current policy, continuing from a half-written chain of thought, eventually reaches a correct answer. That is nearly as hard as solving the problem, and it shifts as the policy changes.
+- **The reward is sparse and terminal.** With $\gamma = 1$ and $\lambda = 1$, GAE gives $\hat A_t = r(x, y) - V_\psi(s_t)$: the critic only supplies a baseline. Smaller $\lambda$ would give per-token credit assignment, but only if $V_\psi$ is accurate, and with an inaccurate critic the resulting bias can be worse than the variance it removes.
+
+The alternative is to sample several responses per prompt and let them serve as baselines for one another. Sampling is the operation the system is already built to do quickly, and $K$ responses to the same prompt directly measure how hard that prompt is for the current policy.
+
+### Baselines from a group of samples
+
+Fix a prompt $x$ and draw $K \ge 2$ independent responses $y^{(1)}, \dots, y^{(K)} \sim \pi_\theta(\cdot \mid x)$, with rewards $r_i = r(x, y^{(i)})$. The REINFORCE estimator of Section 2 with a baseline $b_i$ is
+$$
+\hat g = \frac{1}{K} \sum_{i=1}^K \big( r_i - b_i \big)\, \nabla_\theta \log \pi_\theta(y^{(i)} \mid x), \qquad \nabla_\theta \log \pi_\theta(y \mid x) = \sum_{t=1}^{T} \nabla_\theta \log \pi_\theta(y_t \mid s_t).
+$$
+The question is which $b_i$ keep $\hat g$ unbiased.
+
+<Result name="Leave-one-out baseline">
+Let $b_i = \frac{1}{K - 1} \sum_{j \ne i} r_j$. Then $\mathbb{E}[\hat g] = \nabla_\theta\, \mathbb{E}_{y \sim \pi_\theta}[r(x, y)]$. If instead $b_i = \bar r = \frac{1}{K} \sum_{j} r_j$, then $\mathbb{E}[\hat g] = \frac{K - 1}{K}\, \nabla_\theta\, \mathbb{E}_{y \sim \pi_\theta}[r(x, y)]$.
+</Result>
+
+*Proof.* The baseline $b_i$ is a function of $y^{(j)}$ for $j \ne i$ only, and these are independent of $y^{(i)}$. Hence
+$$
+\mathbb{E}\big[ b_i\, \nabla_\theta \log \pi_\theta(y^{(i)} \mid x) \big] = \mathbb{E}[b_i]\; \mathbb{E}_{y \sim \pi_\theta}\big[ \nabla_\theta \log \pi_\theta(y \mid x) \big] = 0,
+$$
+because $\mathbb{E}_{y \sim \pi_\theta}[\nabla_\theta \log \pi_\theta(y \mid x)] = \sum_y \nabla_\theta \pi_\theta(y \mid x) = \nabla_\theta 1 = 0$. The remaining term $\frac1K \sum_i r_i \nabla_\theta \log \pi_\theta(y^{(i)} \mid x)$ is the plain REINFORCE estimator, which is unbiased. For the mean baseline, write $\bar r = \frac{1}{K} r_i + \frac{K-1}{K} b_i$ with $b_i$ the leave-one-out baseline. Then
+$$
+r_i - \bar r = \frac{K - 1}{K} \big( r_i - b_i \big)
+$$
+holds pointwise, so the mean-baseline estimator is exactly $\frac{K-1}{K}$ times the leave-one-out estimator. $\square$
+
+The mean baseline fails to be unbiased only because $\bar r$ contains $r_i$ itself, which correlates with $\nabla_\theta \log \pi_\theta(y^{(i)} \mid x)$. The damage is a constant rescaling, which can be absorbed into the learning rate or undone by multiplying by $K/(K-1)$. This leave-one-out construction was proposed for REINFORCE by Kool et al. (2019), and Ahmadian et al. (2024) revived it for language models as **RLOO**, arguing that for fine-tuning a strong pretrained model, the variance-reduction machinery of PPO is largely unnecessary and REINFORCE with this baseline is competitive at lower cost.
+
+A different critic-free choice is **ReMax**, which uses as baseline the reward of the greedy (argmax) decode for the same prompt. The greedy response is a deterministic function of $x$ and $\theta$, so it is also a valid baseline, at the cost of one extra generation per prompt.
+
+## Group Relative Policy Optimization
+
+**GRPO** was introduced by Shao et al. (2024) in the DeepSeekMath work, where it was used with a learned reward model; it became the standard RLVR algorithm after DeepSeek-R1 applied it with rule-based rewards. It combines three ingredients: a group-normalized advantage, the PPO clipped surrogate applied per token, and a KL penalty placed in the loss rather than in the reward.
+
+<Definition name="GRPO">
+For a prompt $x$, sample $y^{(1)}, \dots, y^{(K)}$ from the rollout policy $\pi_{\theta_{\mathrm{old}}}$ and score them. The **group-relative advantage** of response $i$ is
+$$
+\hat A_i = \frac{r_i - \mathrm{mean}(r_1, \dots, r_K)}{\mathrm{std}(r_1, \dots, r_K) + \delta},
+$$
+with a small $\delta \gt 0$, and every token of response $i$ receives it: $\hat A_{i,t} = \hat A_i$. With per-token ratios $\rho_{i,t}(\theta) = \pi_\theta(y^{(i)}_t \mid s^{(i)}_t) / \pi_{\theta_{\mathrm{old}}}(y^{(i)}_t \mid s^{(i)}_t)$, GRPO maximizes
+$$
+\mathcal{L}(\theta) = \frac{1}{K} \sum_{i=1}^K \frac{1}{|y^{(i)}|} \sum_{t=1}^{|y^{(i)}|} \Big[ \min\big( \rho_{i,t}(\theta) \hat A_i,\ \mathrm{clip}(\rho_{i,t}(\theta), 1 - \epsilon, 1 + \epsilon)\, \hat A_i \big) - \beta\, \hat k_{i,t} \Big],
+$$
+averaged over prompts, where
+$$
+\hat k_{i,t} = \frac{\pi_{\mathrm{ref}}(y^{(i)}_t \mid s^{(i)}_t)}{\pi_\theta(y^{(i)}_t \mid s^{(i)}_t)} - \log \frac{\pi_{\mathrm{ref}}(y^{(i)}_t \mid s^{(i)}_t)}{\pi_\theta(y^{(i)}_t \mid s^{(i)}_t)} - 1 .
+$$
+</Definition>
+
+The KL estimator $\hat k$ uses the identity that for $u = \pi_{\mathrm{ref}}/\pi_\theta$ evaluated at a token sampled from $\pi_\theta$, $\mathbb{E}[u - 1] = 0$ and $\mathbb{E}[-\log u]$ is the per-token KL divergence. So $\hat k$ is an unbiased estimator of $\mathrm{KL}(\pi_\theta \,\|\, \pi_{\mathrm{ref}})$ at that state, and since $u - 1 - \log u \ge 0$ it is never negative, unlike the plain $-\log u$. (Strictly, the tokens are sampled from $\pi_{\theta_{\mathrm{old}}}$, not $\pi_\theta$; within one round of updates the two are close.)
+
+Compared with Section 3's PPO, the KL term has moved. There, the per-token KL penalty was subtracted from the reward and so entered the advantages and the critic's targets. In GRPO the advantage depends only on the verifier, and the KL term is a separate regularizer in the loss, differentiated directly.
+
+The numerator $r_i - \mathrm{mean}$ is the mean baseline analysed above, so before the other modifications the update is a rescaled REINFORCE with a nearly unbiased baseline. The denominator and the $1/|y^{(i)}|$ factor are another matter, and are the subject of the next section.
+
+```
+GRPO (one iteration)
+input: policy pi_theta, reference pi_ref, prompts D, group size K,
+       clip range eps, KL coefficient beta, inner epochs M
+
+pi_old <- copy of pi_theta
+sample a batch of prompts x_1 .. x_B from D
+for each prompt x_b:
+    sample K responses y_b1 .. y_bK from pi_old( . | x_b)
+    r_bi <- verifier(x_b, y_bi)                 for i = 1 .. K
+    m_b  <- mean_i r_bi ;  s_b <- std_i r_bi
+    A_bi <- (r_bi - m_b) / (s_b + delta)        same value for every token of y_bi
+    store log pi_old and log pi_ref for every token
+repeat M times (optionally over minibatches):
+    for every token t of every response y_bi:
+        ratio <- exp(log pi_theta(token) - log pi_old(token))
+        surr  <- min(ratio * A_bi, clip(ratio, 1-eps, 1+eps) * A_bi)
+        u     <- exp(log pi_ref(token) - log pi_theta(token))
+        kl    <- u - log(u) - 1
+        term <- surr - beta * kl
+    loss <- - mean over prompts b, mean over i, (1/|y_bi|) * sum over t of term
+    take a gradient step on loss
+```
+
+The three critic-free and critic-based options compare as follows.
+
+| | PPO (Section 3) | RLOO | GRPO |
+|---|---|---|---|
+| Value network | yes, trained alongside the policy | none | none |
+| Samples per prompt | one is enough | $K \ge 2$ | $K \ge 2$ |
+| Baseline | $V_\psi(s_t)$ per token | mean of the other $K - 1$ rewards | mean of all $K$ rewards, then divided by group std |
+| Credit assignment | per token via GAE | one advantage per response | one advantage per response |
+| KL to reference | per-token penalty in the reward | usually in the reward | separate term in the loss |
+| Off-policy reuse | clipped ratio, several epochs | typically on-policy, single step | clipped ratio, several epochs |
+| Gradient bias | from critic error | unbiased | rescaled by std and length normalization |
+
+## Hidden biases in the GRPO objective
+
+Liu et al. (2025), in *Understanding R1-Zero-Like Training*, pointed out that two normalizations in the GRPO loss change what is being optimized, and proposed **Dr. GRPO**, which removes both. Both effects are easiest to see with a binary reward.
+
+### Dividing by the group standard deviation
+
+For binary rewards with $c$ correct responses out of $K$, write $\hat p = c/K$. The group mean is $\hat p$ and the (population) standard deviation is $\sqrt{\hat p (1 - \hat p)}$, so for $0 \lt c \lt K$
+$$
+\hat A_i = \begin{cases} \sqrt{(1 - \hat p)/\hat p} & \text{if } r_i = 1, \\[2pt] -\sqrt{\hat p / (1 - \hat p)} & \text{if } r_i = 0, \end{cases}
+$$
+ignoring $\delta$. For a prompt the policy almost always solves, the many correct responses get small positive advantages and the rare failures get large negative ones; for a prompt it almost never solves, the reverse. Summing $|\hat A_i|$ over the group gives $2K\sqrt{\hat p(1 - \hat p)}$, against $2K\hat p(1 - \hat p)$ for the unnormalized $r_i - \hat p$, so normalization multiplies the prompt's total weight by $1/\sqrt{\hat p(1 - \hat p)}$, which is largest when $\hat p$ is close to $0$ or $1$.
+
+<Result name="What std normalization optimizes">
+Assume binary rewards, ignore clipping and the KL term, and let $K \to \infty$ so that the group statistics converge to $p_\theta(x)$ and $\sqrt{p_\theta(x)(1 - p_\theta(x))}$. Then the expected GRPO update for prompt $x$ is proportional to
+$$
+\frac{\nabla_\theta\, p_\theta(x)}{\sqrt{p_\theta(x)\,(1 - p_\theta(x))}} = \nabla_\theta\, 2 \arcsin \sqrt{p_\theta(x)} ,
+$$
+so GRPO ascends $\mathbb{E}_x\big[ 2 \arcsin \sqrt{p_\theta(x)} \big]$ rather than the average pass rate $\mathbb{E}_x[p_\theta(x)]$.
+</Result>
+
+*Derivation.* Without the denominator, the expected update for prompt $x$ is the REINFORCE gradient $\nabla_\theta p_\theta(x)$ (up to the factor $(K-1)/K$, which tends to $1$). In the limit the denominator is a constant for that prompt, so it divides this gradient. The identity follows from $\frac{d}{dp} \arcsin \sqrt p = \frac{1}{2\sqrt{p(1-p)}}$. $\square$
+
+The transformed objective $2\arcsin\sqrt{p}$ is steep near $p = 0$ and $p = 1$ and flat in the middle. It weights very hard and very easy prompts more heavily than average-difficulty ones, a **difficulty bias** that does not correspond to any stated goal. For finite $K$ there is an additional small bias, because $\hat\sigma$ is computed from the same samples it weights. Dr. GRPO drops the division and uses $r_i - \mathrm{mean}$. Whether the reweighting helps or hurts in practice depends on the prompt distribution; the point is that it is a choice, not a neutral normalization.
+
+### Dividing by the response length
+
+The factor $1/|y^{(i)}|$ makes each response contribute the average of its token terms. Ignoring clipping, response $i$ contributes
+$$
+\frac{\hat A_i}{|y^{(i)}|} \sum_{t} \nabla_\theta \log \pi_\theta(y^{(i)}_t \mid s^{(i)}_t) = \frac{\hat A_i}{|y^{(i)}|}\, \nabla_\theta \log \pi_\theta(y^{(i)} \mid x).
+$$
+This is REINFORCE with the reward divided by the length, which biases the objective:
+
+- When $\hat A_i \gt 0$, a shorter correct response is reinforced more strongly than a longer one.
+- When $\hat A_i \lt 0$, a longer incorrect response is penalized more weakly per token than a shorter one.
+
+The second effect means that, among wrong answers, the policy is pushed less hard away from long ones, so incorrect responses can grow in length without any corresponding gain in accuracy. Some of the growth in response length observed during RLVR training may therefore be an artefact of the loss rather than a sign of more reasoning. Dr. GRPO replaces $1/|y^{(i)}|$ by a constant (the same for every response), which recovers an unbiased REINFORCE-style gradient up to scale.
+
+## DAPO: making group sampling efficient
+
+Yu et al. (2025) proposed **DAPO**, a set of modifications to GRPO aimed at long-chain-of-thought training. They also dropped the KL term. Each modification addresses a specific failure.
+
+### Zero-advantage groups
+
+If all $K$ responses to a prompt receive the same reward, then $r_i = \mathrm{mean}$ for every $i$ and $\hat A_i = 0$: the prompt contributes no policy gradient at all, only the KL term. (The std is zero as well, which is why $\delta$ is needed.) For a binary reward and a prompt with success probability $p$, this happens with probability
+$$
+\Pr[\text{group uninformative}] = p^K + (1 - p)^K .
+$$
+Prompts that are far too hard ($p \approx 0$) and prompts the policy has already mastered ($p \approx 1$) both produce almost only uninformative groups. As training progresses, more prompts move toward $p = 1$, so a growing share of every batch carries no signal: the effective batch size shrinks and the gradient becomes noisier, even though the compute spent on generation is unchanged.
+
+DAPO's **dynamic sampling** keeps sampling prompts and discards groups whose rewards are all equal until the batch is filled with informative groups. This costs extra generation but keeps the number of prompts with non-zero advantage constant. The same calculation motivates curriculum and filtering schemes that select prompts with intermediate estimated pass rates.
+
+### Clip-higher
+
+The PPO clip is symmetric: the ratio may move to $1 - \epsilon$ or $1 + \epsilon$. For a token with old probability $q$, the upper clip caps its new probability near $(1 + \epsilon) q$. If $q$ is small, this is a tiny absolute increase; if $q$ is large, the token can move almost to probability one. The symmetric clip thus makes it easy to sharpen already-likely tokens and hard to promote unlikely ones, which accelerates entropy collapse (discussed below). DAPO decouples the clip range into $\epsilon_{\mathrm{low}}$ and $\epsilon_{\mathrm{high}}$ with $\epsilon_{\mathrm{high}} \gt \epsilon_{\mathrm{low}}$, leaving more room for low-probability tokens to grow.
+
+### Token-level loss aggregation
+
+Instead of averaging within each response and then across responses, DAPO normalizes by the total number of tokens in the group:
+$$
+\frac{1}{\sum_{i} |y^{(i)}|} \sum_{i=1}^K \sum_{t=1}^{|y^{(i)}|} \big[ \cdots \big].
+$$
+Every token now has the same weight, so long responses contribute in proportion to their length, and the asymmetric length effects of the per-response average are removed within a group. (The normalizer still varies from group to group, so this is not identical to Dr. GRPO's constant normalizer.)
+
+### Overlong responses
+
+Responses truncated at the length limit are scored as wrong even when the reasoning was on track, which injects noise. DAPO masks truncated responses out of the loss and adds a soft penalty that grows linearly over a buffer just below the limit.
+
+## DeepSeek-R1 and emergent reasoning
+
+The landmark result for RLVR is DeepSeek-R1 (DeepSeek-AI, 2025). Its first model, **R1-Zero**, applied GRPO directly to a pretrained base model with no supervised fine-tuning on reasoning traces. The reward was rule-based: correctness of the final answer for maths and code, plus a format reward for placing the reasoning inside designated tags.
+
+Several things happened without being asked for. Response length grew steadily during training, and behaviours such as re-checking intermediate results, backtracking and trying alternative approaches appeared in the chains of thought, while accuracy on reasoning tasks rose substantially. The reward said nothing about how to reason; long chains of thought emerged because they raised the probability of a correct answer.
+
+R1-Zero also had problems: its reasoning was often hard to read and mixed languages. The full **R1** pipeline added a small amount of supervised "cold-start" data with readable long chains of thought, then reasoning-oriented RL (with an added reward for language consistency), then rejection sampling to build a larger supervised set combined with general data, then a final RL stage covering both reasoning and general helpfulness. The report also found that distilling R1's outputs into smaller models by supervised fine-tuning worked well, and better than running the same RL directly on the small models.
+
+Later analyses, including the Dr. GRPO paper, have qualified the story. Some base models already exhibit self-reflection behaviours before any RL, and part of the length growth can come from the loss normalization described above. That the method works is not in doubt; exactly what it is teaching is still being worked out.
+
+## Outcome versus process rewards
+
+Everything above uses an **outcome reward**: one score for the whole response. Credit assignment over thousands of tokens is then left entirely to averaging over samples. A **process reward** scores intermediate steps instead.
+
+<Definition name="Process reward model">
+Split a response into reasoning steps $y = (z_1, \dots, z_m)$. A **process reward model** (PRM) assigns each prefix a score $r_\phi(x, z_1, \dots, z_k)$, typically an estimate of the probability that step $k$ is correct. An **outcome reward model** (ORM) scores only the complete response.
+</Definition>
+
+Lightman et al. (2023), in *Let's Verify Step by Step*, collected human labels for the correctness of individual steps of maths solutions and trained a PRM on them. Used to rerank many sampled solutions, the process-supervised model was a more reliable verifier than an outcome-supervised one. Step labels can also be produced without humans, by estimating each prefix's value from the success rate of rollouts continued from it, which is a Monte Carlo estimate of $V^\pi(s_t)$ at step boundaries.
+
+For RL training, though, PRMs reintroduce what RLVR was designed to avoid: a learned model that the policy can exploit, and that must be kept up to date as the policy's distribution shifts. The DeepSeek-R1 report lists PRMs among its unsuccessful attempts for these reasons. Current large-scale practice mostly uses outcome rewards from verifiers, while PRMs remain useful for reranking, search and analysis. Whether denser credit assignment can be obtained cheaply and robustly is an open problem.
+
+## Entropy collapse and exploration
+
+RLVR can only reinforce correct responses the policy actually samples. If the policy's entropy collapses early — if it puts nearly all its mass on one style of solution — then exploration stops, groups become uniform, and by the calculation above the gradient signal vanishes.
+
+A simple calculation shows why policy-gradient updates tend to reduce entropy. Consider a single state with softmax policy $\pi(a) \propto e^{z_a}$ and an update that moves each logit in proportion to the advantage, $z_a \leftarrow z_a + \eta A(a)$ with $\mathbb{E}_{a \sim \pi}[A(a)] = 0$ (the natural-gradient direction for a tabular softmax). Since $\partial H / \partial z_a = -\pi(a)\big(\log \pi(a) + H\big)$ for $H = -\sum_a \pi(a) \log \pi(a)$, the first-order change in entropy is
+$$
+\Delta H \approx -\eta \sum_a \pi(a)\, A(a) \big( \log \pi(a) + H \big) = -\eta\, \mathrm{Cov}_{a \sim \pi}\big( \log \pi(a),\, A(a) \big).
+$$
+Entropy falls whenever high-probability actions have high advantage. Early in RLVR training this is the typical situation: the model's most likely solution paths are the ones that already succeed most often, so reinforcing them drains entropy quickly.
+
+Remedies in use include clip-higher, entropy bonuses, limiting updates on tokens whose log-probability and advantage are strongly correlated, higher rollout temperature, and keeping prompts at intermediate difficulty. None is clearly best; exploration in this setting is an active research topic.
+
+## Does RLVR expand capability or sharpen it?
+
+The pass rate $p_\theta(x)$ is **pass@1**. A more informative family of metrics is **pass@k**: the probability that at least one of $k$ independent samples is correct, $1 - (1 - p_\theta(x))^k$. Given $n \ge k$ samples of which $c$ are correct, the standard unbiased estimator is
+$$
+\widehat{\text{pass@}k} = 1 - \binom{n - c}{k} \Big/ \binom{n}{k}.
+$$
+For large $k$, pass@k measures whether the model can solve the problem at all, rather than how reliably it does so.
+
+Yue et al. (2025), in *Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?*, compared RLVR-trained models with their base models across a range of $k$. RL improved pass@1, but as $k$ grew the base model caught up and, at large $k$, often solved more problems than the RL model. Their interpretation is that current RLVR mostly **sharpens** the base distribution: it moves probability onto reasoning paths the base model could already sample, rather than creating new ones, and in doing so it narrows coverage.
+
+This reading fits the mechanics: a response with negligible probability under $\pi_\theta$ is essentially never sampled, so it is never reinforced, and entropy collapse narrows things further. On the other hand, other work has reported that prolonged RL with careful entropy management can solve problems the base model essentially never solved, for instance by composing known skills into longer chains. Whether RLVR fundamentally expands what a model can do, or mainly makes it reliably do what it already could, remains an open and actively debated question; the answer may depend on the base model, the task and the length of training.
+
+## Practical issues
+
+### Off-policy and asynchronous rollouts
+
+Generation dominates the cost of RLVR, because chains of thought are long and $K$ samples are needed per prompt. To keep accelerators busy, many systems run generation and training asynchronously: inference workers produce rollouts with a slightly stale copy of the weights while the trainer updates. The rollouts are then off-policy by a few steps. PPO-style ratios $\rho_{i,t}$ computed against the policy that actually generated each sample correct for small lags, and the clip limits the damage from larger ones.
+
+### Train–inference mismatch
+
+Rollouts are typically generated by a fast inference engine and log-probabilities for training are recomputed by the training framework. Even with identical weights the two disagree slightly, because of different kernels, numerical precision, batching and sometimes quantization. The sampling distribution $\pi_{\mathrm{infer}}$ is then not the $\pi_{\theta_{\mathrm{old}}}$ in the ratio, so the update is silently off-policy. Over long sequences the discrepancies compound and can destabilize training. Fixes include importance weighting by $\pi_{\theta_{\mathrm{old}}} / \pi_{\mathrm{infer}}$ per token, truncated to bound its variance, and aligning precision between the two engines.
+
+## Test-time compute
+
+RLVR changes how a model uses compute at inference. A model trained to reason at length spends more tokens on harder problems, so response length becomes a knob: accuracy typically improves with the thinking budget, up to a point. This is **sequential** test-time compute. **Parallel** test-time compute samples many responses and aggregates them, by majority vote over final answers (self-consistency) or by reranking with a verifier or reward model. Pass@k is the ceiling for any such aggregation: if no sample is correct, no selection rule can recover.
+
+The two interact with training: sharpening raises pass@1, but if it lowers pass@k it also lowers the ceiling for parallel sampling.
+
+## Open problems
+
+- **Rewards beyond verifiable domains.** Most valuable tasks have no cheap checker. Rubric-based scoring by a language model and generative verifiers extend the reach of RLVR, but reintroduce some of the hackability that verifiers avoided.
+- **Credit assignment and exploration.** Outcome rewards spread one bit over thousands of tokens, and the policy can only reinforce what it samples; both are tied to the sharpening debate.
+- **Faithfulness of reasoning.** Nothing in the reward requires the chain of thought to reflect the computation that produced the answer.
+- **Agentic settings.** Tool use and interaction with an environment turn one response into a multi-turn episode, bringing back the full MDP of Section 1.
+
+Section 5 leaves text behind: the policy now outputs robot actions, rewards come from the physical world or a simulator, and many of the same critic-free and group-based ideas reappear in a setting where sampling is expensive.
+
+Further reading: Z. Shao et al., *DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models* (2024); DeepSeek-AI, *DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning* (2025); A. Ahmadian et al., *Back to Basics: Revisiting REINFORCE Style Optimization for Learning from Human Feedback in LLMs* (2024); Q. Yu et al., *DAPO: An Open-Source LLM Reinforcement Learning System at Scale* (2025); Z. Liu et al., *Understanding R1-Zero-Like Training: A Critical Perspective* (2025); H. Lightman et al., *Let's Verify Step by Step* (2023); Y. Yue et al., *Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?* (2025).

@@ -1,0 +1,318 @@
+A supervised learner is shown the right answer. A reinforcement learner is only told how well it did. That one change — from a label to a score — is what separates reinforcement learning from the rest of machine learning, and nearly every difficulty in the subject can be traced back to it. A learner told only that a move scored badly must try alternatives to find a better one, must work out which earlier decisions the score was really about, and must learn from data produced by its own, constantly changing behaviour.
+
+These notes are about how that problem is solved today, when the learner is a large pretrained network: a language model generating a proof, a robot policy producing motor commands, a diffusion model producing an image. The modern methods look very different from the textbook ones, but they are built entirely from the textbook vocabulary — Markov decision processes, returns, value functions, advantages, on- and off-policy updates. This section sets up that vocabulary carefully, proves the few facts that everything else rests on, and sketches the classical algorithms that later sections either reuse or deliberately avoid.
+
+## Learning from reward
+
+In supervised learning the data are pairs $(x, y)$ drawn independently from a fixed distribution, and the loss compares the model's output to the target $y$. The feedback is **instructive**: it says what the output should have been, and its gradient points directly towards that answer. Reinforcement learning differs in four connected ways.
+
+1. **Feedback is evaluative, not instructive.** The learner chooses an action and receives a scalar reward. The reward says how good the chosen action was, but not which action would have been best, and not even whether a better one exists. The only way to learn that another action is better is to try it.
+2. **The data depend on the learner.** The states the learner sees, and therefore its training data, are determined by the actions it takes. Changing the policy changes the data distribution. Samples are neither independent nor identically distributed, and a policy that never visits part of the world can never learn about it.
+3. **Credit assignment.** Rewards are often delayed. A game is won or lost at the end; a proof is checked only when it is finished. When an outcome follows a long sequence of decisions, the learner must work out which of those decisions were responsible — the **temporal credit assignment problem**.
+4. **Exploration versus exploitation.** At every point the learner can exploit what it already believes is best or explore something it is less sure about. Pure exploitation can lock in a mediocre behaviour forever; pure exploration never cashes in what it has learned.
+
+<Example>
+The simplest setting with evaluative feedback is the **multi-armed bandit**: there is one state, $k$ actions ("arms"), and pulling arm $a$ yields a random reward with unknown mean $q(a)$. A learner that always pulls the arm with the highest sample-average estimate can be fooled permanently: if the best arm pays out badly at first, it is never pulled again and its estimate is never corrected. The standard fix, **$\varepsilon$-greedy** action selection, pulls a uniformly random arm with small probability $\varepsilon$ and otherwise acts greedily, so every estimate keeps improving. Bandits have exploration and evaluative feedback but no state, and so no credit assignment; the rest of this section adds state.
+</Example>
+
+## Markov decision processes
+
+The standard formalization of sequential decision-making is the agent–environment loop. At each time step $t$ the **agent** observes the current state $s_t$ and chooses an action $a_t$; the **environment** responds with a scalar reward $r_t$ and a next state $s_{t+1}$, and the loop repeats.
+
+<Figure caption="The agent–environment loop. The agent sends an action; the environment returns a reward and the next state.">
+<svg viewBox="0 0 480 200" width="480" height="200" role="img" aria-label="Agent–environment loop">
+  <defs>
+    <marker id="loop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+    </marker>
+  </defs>
+  <rect x="180" y="12" width="120" height="44" rx="6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+  <text x="240" y="39" textAnchor="middle" fill="currentColor" fontSize="15">Agent</text>
+  <rect x="180" y="144" width="120" height="44" rx="6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+  <text x="240" y="171" textAnchor="middle" fill="currentColor" fontSize="15">Environment</text>
+  <path d="M300,34 L380,34 L380,166 L302,166" fill="none" stroke="currentColor" strokeWidth="1.5" markerEnd="url(#loop-arrow)" />
+  <text x="388" y="104" textAnchor="start" fill="currentColor" fontSize="13">action a<tspan fontSize="10" dy="4">t</tspan></text>
+  <path d="M180,166 L100,166 L100,34 L178,34" fill="none" stroke="currentColor" strokeWidth="1.5" markerEnd="url(#loop-arrow)" />
+  <text x="92" y="96" textAnchor="end" fill="currentColor" fontSize="13">state s<tspan fontSize="10" dy="4">t+1</tspan></text>
+  <text x="92" y="118" textAnchor="end" fill="currentColor" fontSize="13">reward r<tspan fontSize="10" dy="4">t</tspan></text>
+</svg>
+</Figure>
+
+The loop becomes a mathematical object once we assume the environment's response depends only on the current state and action.
+
+<Definition name="Markov decision process">
+A **Markov decision process (MDP)** is a tuple $(\mathcal{S}, \mathcal{A}, P, r, \gamma, \mu)$ where
+
+- $\mathcal{S}$ is the set of states and $\mathcal{A}$ the set of actions;
+- $P(s' \mid s, a)$ is the **transition kernel**, the probability of moving to $s'$ after taking $a$ in $s$;
+- $r(s, a)$ is the **reward function**, the expected reward for taking $a$ in $s$;
+- $\gamma \in [0, 1]$ is the **discount factor**;
+- $\mu$ is the **initial-state distribution**, $s_0 \sim \mu$.
+
+The **Markov property** is the assumption that $s_{t+1}$ and $r_t$ are conditionally independent of the history $s_0, a_0, \dots, s_{t-1}, a_{t-1}$ given $(s_t, a_t)$.
+</Definition>
+
+The Markov property is a statement about what we choose to call the state, not about the world: any process becomes Markov if the state is taken to be the entire history. That is exactly what happens for language models below. When the agent sees only part of the state (a robot's camera image rather than the full configuration of the scene), the right model is a partially observable MDP; we will mostly treat the observation history as the state and not dwell on the distinction.
+
+For clean statements we assume throughout that $\mathcal{S}$ and $\mathcal{A}$ are finite and rewards are bounded. Most results extend to general spaces under measurability and compactness conditions that we will not need.
+
+### Policies, trajectories and returns
+
+<Definition name="Policy">
+A **(stationary, stochastic) policy** $\pi$ assigns to each state a distribution $\pi(\cdot \mid s)$ over actions. A policy is **deterministic** if each $\pi(\cdot \mid s)$ is a point mass, in which case we write $a = \pi(s)$. A policy parametrized by a vector $\theta$ — the weights of a neural network, say — is written $\pi_\theta(a \mid s)$.
+</Definition>
+
+Running a policy in an MDP generates a **trajectory** $\tau = (s_0, a_0, r_0, s_1, a_1, r_1, \dots)$. By the Markov property its probability factorizes as
+$$
+p_\pi(s_0, a_0, s_1, a_1, \dots, s_T) = \mu(s_0) \prod_{t=0}^{T-1} \pi(a_t \mid s_t)\, P(s_{t+1} \mid s_t, a_t).
+$$
+Only the factors $\pi(a_t \mid s_t)$ depend on the policy. This trivial-looking observation is the root of the policy gradient theorem in Section 2: the gradient of a trajectory's log-probability with respect to $\theta$ involves only the policy, never the unknown dynamics $P$.
+
+<Definition name="Return">
+The **return** from time $t$ is the discounted sum of future rewards,
+$$
+G_t = \sum_{k \ge 0} \gamma^k r_{t+k} = r_t + \gamma G_{t+1}.
+$$
+The **objective** of a policy is its expected return from the start, $J(\pi) = \mathbb{E}_{\tau \sim \pi}[G_0]$, written $J(\theta)$ for a parametrized policy.
+</Definition>
+
+The recursion $G_t = r_t + \gamma G_{t+1}$ is the seed of every Bellman equation below.
+
+The discount factor plays two roles. Mathematically, $\gamma < 1$ makes $G_t$ finite for bounded rewards, since $|G_t| \le R_{\max}/(1 - \gamma)$, and it is what makes the dynamic programming operators below contractions. Practically, it expresses a preference for reward sooner rather than later, and it shortens the effective horizon to roughly $1/(1 - \gamma)$ steps, which reduces variance at the price of biasing the learner towards short-term behaviour.
+
+Many tasks are **episodic**: they end, in a terminal state, after a finite number of steps $T$. Episodic tasks fit the definition above by making the terminal state absorbing, with zero reward forever after. If every episode terminates within a bounded number of steps, the return is finite even with $\gamma = 1$, and the undiscounted return $G_0 = \sum_{t=0}^{T-1} r_t$ is the natural objective. A **finite-horizon** problem has a fixed maximum length $H$; there the optimal action can depend on the time remaining, so one either lets policies depend on $t$ or folds $t$ into the state.
+
+<Example name="Text generation as an MDP">
+Let a language model $\pi_\theta$ answer a prompt $x$ with a response $y = (y_1, \dots, y_T)$, one token at a time. With time indexed from $1$, this is an MDP in which
+
+- the state is the prompt plus everything generated so far, $s_t = (x, y_{\lt t})$, and the initial-state distribution $\mu$ is the distribution of prompts;
+- the action is the next token, $a_t = y_t$, chosen from the vocabulary;
+- the transition is deterministic and known: $s_{t+1}$ is $s_t$ with $y_t$ appended, and the episode ends when an end-of-sequence token is produced or a length limit is reached;
+- the reward is zero at every step except the last, where it equals a sequence-level score $r(x, y)$ — a learned reward model, or a program that checks the answer;
+- there is no discounting, $\gamma = 1$.
+
+So LLM generation is an **episodic, undiscounted, finite-horizon MDP with a sparse terminal reward**, and the return from every step is the same number, $G_t = r(x, y)$. The state includes the whole prefix, so the Markov property holds by construction and the time step is part of the state. Notice what is easy and what is hard. The dynamics are trivial, so there is nothing to learn about the environment. But the action space is enormous, and all the credit for a long response arrives in a single scalar at the end. Sections 2–4 are largely about coping with that last fact.
+</Example>
+
+## Value functions and the Bellman equations
+
+The central objects of classical RL are functions that predict return.
+
+<Definition name="Value functions">
+For a policy $\pi$, the **state-value function**, **action-value function** and **advantage function** are
+$$
+V^\pi(s) = \mathbb{E}_\pi[G_t \mid s_t = s], \qquad Q^\pi(s, a) = \mathbb{E}_\pi[G_t \mid s_t = s, a_t = a], \qquad A^\pi(s, a) = Q^\pi(s, a) - V^\pi(s).
+$$
+The expectations are over trajectories generated by following $\pi$ from time $t$ on (in the case of $Q^\pi$, after first taking $a$). For a stationary policy in an infinite-horizon or absorbing MDP they do not depend on $t$.
+</Definition>
+
+$V^\pi(s)$ is how good it is to be in $s$ under $\pi$; $Q^\pi(s, a)$ is how good it is to take $a$ in $s$ and then follow $\pi$; and $A^\pi(s, a)$ is how much better $a$ is than what $\pi$ would do on average. Directly from the definitions,
+$$
+V^\pi(s) = \sum_a \pi(a \mid s)\, Q^\pi(s, a), \qquad \text{hence} \qquad \mathbb{E}_{a \sim \pi(\cdot \mid s)}\big[A^\pi(s, a)\big] = 0,
+$$
+and $J(\pi) = \mathbb{E}_{s_0 \sim \mu}[V^\pi(s_0)]$. The advantage is centred: positive for actions better than the policy's average, negative for worse ones. That is why it, and not the raw return, is the quantity policy-gradient methods try to estimate (Section 2).
+
+### The Bellman expectation equations
+
+<Result name="Bellman expectation equations">
+For every policy $\pi$ and all $s, a$,
+$$
+V^\pi(s) = \sum_a \pi(a \mid s) \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^\pi(s') \Big],
+$$
+$$
+Q^\pi(s, a) = r(s, a) + \gamma \sum_{s'} P(s' \mid s, a) \sum_{a'} \pi(a' \mid s')\, Q^\pi(s', a').
+$$
+</Result>
+
+The derivation is a single application of the return recursion and the Markov property. Condition on $s_t = s$ and on the action $a_t = a$:
+$$
+\begin{aligned}
+\mathbb{E}_\pi[G_t \mid s_t = s, a_t = a]
+&= \mathbb{E}_\pi[r_t \mid s_t = s, a_t = a] + \gamma\, \mathbb{E}_\pi[G_{t+1} \mid s_t = s, a_t = a] \\
+&= r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, \mathbb{E}_\pi[G_{t+1} \mid s_t = s, a_t = a, s_{t+1} = s'] \\
+&= r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^\pi(s').
+\end{aligned}
+$$
+The second line is the tower rule. The third uses the Markov property — given $s_{t+1}$, the future rewards are independent of $(s_t, a_t)$ — together with stationarity of $\pi$, so the conditional expectation of $G_{t+1}$ given $s_{t+1} = s'$ is $V^\pi(s')$. The left side is $Q^\pi(s, a)$, which proves
+$$
+Q^\pi(s, a) = r(s, a) + \gamma\, \mathbb{E}_{s' \sim P(\cdot \mid s, a)}\big[V^\pi(s')\big].
+$$
+Averaging over $a \sim \pi(\cdot \mid s)$ gives the equation for $V^\pi$, and substituting $V^\pi(s') = \sum_{a'} \pi(a' \mid s') Q^\pi(s', a')$ gives the one for $Q^\pi$.
+
+In a finite MDP, write $r_\pi(s) = \sum_a \pi(a \mid s) r(s, a)$ and $P_\pi(s, s') = \sum_a \pi(a \mid s) P(s' \mid s, a)$. The Bellman expectation equation is then the linear system $V^\pi = r_\pi + \gamma P_\pi V^\pi$. For $\gamma < 1$ the matrix $I - \gamma P_\pi$ is invertible (its eigenvalues have modulus at least $1 - \gamma$, since $P_\pi$ is stochastic), so
+$$
+V^\pi = (I - \gamma P_\pi)^{-1} r_\pi .
+$$
+Evaluating a policy in a known finite MDP is just linear algebra.
+
+### Optimality
+
+<Definition name="Optimal value functions">
+The **optimal value functions** are $V^\ast(s) = \max_\pi V^\pi(s)$ and $Q^\ast(s, a) = \max_\pi Q^\pi(s, a)$, the maxima taken over all policies, including history-dependent ones. A policy $\pi^\ast$ is **optimal** if $V^{\pi^\ast}(s) = V^\ast(s)$ for every state $s$.
+</Definition>
+
+It is not obvious that a single policy can be best from every starting state at once, nor that it can be taken simple. Both are true.
+
+<Result name="Existence of an optimal deterministic policy">
+In a finite MDP with $\gamma \lt 1$, $V^\ast$ and $Q^\ast$ are the unique solutions of the **Bellman optimality equations**
+$$
+V^\ast(s) = \max_a \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V^\ast(s') \Big], \qquad
+Q^\ast(s, a) = r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, \max_{a'} Q^\ast(s', a').
+$$
+Any policy that is greedy with respect to $Q^\ast$, that is $\pi^\ast(s) \in \arg\max_a Q^\ast(s, a)$, is optimal. In particular there is an optimal policy that is deterministic and stationary.
+</Result>
+
+The optimality equation says: the value of a state is the value of the best action, assuming you act optimally afterwards. The uniqueness and existence claims follow from the contraction argument in the next section; that the greedy policy is optimal follows from the policy improvement theorem below. For episodic problems with a fixed horizon the same holds with policies allowed to depend on $t$ — or, as for language models, with $t$ already in the state.
+
+Two consequences matter later. First, knowing $Q^\ast$ is enough to act optimally, with no further model of the environment and a single maximization per step; this is the premise of value-based methods. Second, randomness is never *required* for optimality in an MDP. Stochastic policies are used anyway, because they explore, because they make the objective differentiable in $\theta$, and because a generative model is naturally a distribution.
+
+## Dynamic programming
+
+When $P$ and $r$ are known, the Bellman equations can be solved by **dynamic programming**. Define two operators on functions $V : \mathcal{S} \to \mathbb{R}$:
+$$
+(T^\pi V)(s) = \sum_a \pi(a \mid s) \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V(s') \Big], \qquad
+(T^\ast V)(s) = \max_a \Big[ r(s, a) + \gamma \sum_{s'} P(s' \mid s, a)\, V(s') \Big].
+$$
+The Bellman equations say exactly that $V^\pi$ is a fixed point of $T^\pi$ and $V^\ast$ a fixed point of $T^\ast$.
+
+<Result name="Contraction">
+For $\gamma \lt 1$, both $T^\pi$ and $T^\ast$ are $\gamma$-contractions in the sup norm: $\|TV - TV'\|_\infty \le \gamma \|V - V'\|_\infty$. Consequently each has a unique fixed point, and the iteration $V_{k+1} = T V_k$ converges to it from any $V_0$, with $\|V_k - V^{\mathrm{fix}}\|_\infty \le \gamma^k \|V_0 - V^{\mathrm{fix}}\|_\infty$.
+</Result>
+
+For $T^\ast$, use the elementary inequality $|\max_a f(a) - \max_a g(a)| \le \max_a |f(a) - g(a)|$. With $f(a)$ and $g(a)$ the bracketed expressions for $V$ and $V'$,
+$$
+|(T^\ast V)(s) - (T^\ast V')(s)| \le \max_a \gamma \sum_{s'} P(s' \mid s, a)\, |V(s') - V'(s')| \le \gamma \|V - V'\|_\infty ,
+$$
+because $P(\cdot \mid s, a)$ is a probability distribution. The argument for $T^\pi$ is the same with an average in place of the maximum. The rest is Banach's fixed-point theorem.
+
+This gives three algorithms.
+
+- **Policy evaluation**: iterate $V_{k+1} = T^\pi V_k$ (or solve the linear system directly) to compute $V^\pi$.
+- **Value iteration**: iterate $V_{k+1} = T^\ast V_k$. The iterates converge geometrically to $V^\ast$, and the greedy policy with respect to $V_k$ is optimal once $k$ is large enough.
+- **Policy iteration**: alternate between evaluating the current policy, $V^{\pi_k}$, and improving it greedily, $\pi_{k+1}(s) \in \arg\max_a Q^{\pi_k}(s, a)$.
+
+Policy iteration rests on the following fact, whose proof is worth seeing because it is the template for the policy-improvement bounds behind TRPO and PPO in Section 2.
+
+<Result name="Policy improvement">
+Let $\pi'$ be greedy with respect to $Q^\pi$, so $Q^\pi(s, \pi'(s)) = \max_a Q^\pi(s, a)$ for every $s$. Then $V^{\pi'}(s) \ge V^\pi(s)$ for every $s$. If equality holds everywhere, $\pi$ is optimal.
+</Result>
+
+Since $V^\pi(s)$ is an average of $Q^\pi(s, \cdot)$ it is at most the maximum, so
+$$
+\begin{aligned}
+V^\pi(s) &\le Q^\pi(s, \pi'(s)) = \mathbb{E}\big[r_t + \gamma V^\pi(s_{t+1}) \mid s_t = s,\ a_t = \pi'(s)\big] \\
+&\le \mathbb{E}_{\pi'}\big[r_t + \gamma\, Q^\pi(s_{t+1}, \pi'(s_{t+1})) \mid s_t = s\big] \\
+&= \mathbb{E}_{\pi'}\big[r_t + \gamma r_{t+1} + \gamma^2 V^\pi(s_{t+2}) \mid s_t = s\big] \\
+&\le \cdots \le \mathbb{E}_{\pi'}\Big[\sum_{k=0}^{n-1} \gamma^k r_{t+k} + \gamma^n V^\pi(s_{t+n}) \,\Big|\, s_t = s\Big] \longrightarrow V^{\pi'}(s).
+\end{aligned}
+$$
+If equality holds everywhere then $V^\pi = T^\ast V^\pi$, so $V^\pi = V^\ast$ by uniqueness. Since a finite MDP has finitely many deterministic policies and each step of policy iteration strictly improves some state's value until it stops, policy iteration terminates at an optimal policy after finitely many steps.
+
+Dynamic programming needs the model and sweeps over every state, so it does not scale as stated. Its importance is conceptual: every method below is an approximate, sampled version of policy evaluation, value iteration or policy iteration.
+
+## Learning without a model
+
+In the **model-free** setting the agent does not know $P$ or $r$; it only has sampled transitions $(s_t, a_t, r_t, s_{t+1})$ from interacting with the environment. The question is how to replace the expectations in the Bellman equations by samples.
+
+### Monte Carlo and temporal-difference learning
+
+Consider estimating $V^\pi$ from episodes generated by $\pi$. The **Monte Carlo** method uses the definition directly: $V^\pi(s)$ is the expected return from $s$, so move the estimate towards the observed return,
+$$
+V(s_t) \leftarrow V(s_t) + \alpha \big( G_t - V(s_t) \big).
+$$
+**Temporal-difference (TD) learning** instead uses the Bellman equation $V^\pi(s) = \mathbb{E}_\pi[r_t + \gamma V^\pi(s_{t+1}) \mid s_t = s]$, replacing the unknown $V^\pi(s_{t+1})$ by the current estimate. The TD(0) update is
+$$
+V(s_t) \leftarrow V(s_t) + \alpha\, \delta_t, \qquad \delta_t = r_t + \gamma V(s_{t+1}) - V(s_t),
+$$
+where $\delta_t$ is the **TD error**. Using an estimate to update an estimate is called **bootstrapping**.
+
+The two methods sit at opposite ends of a bias–variance trade-off. The Monte Carlo target $G_t$ is an unbiased sample of $V^\pi(s_t)$, but it sums many random rewards and has high variance, and it is available only once the episode ends. The TD target $r_t + \gamma V(s_{t+1})$ involves one random reward and one transition, so its variance is much lower and it can be used online, but it is biased whenever $V$ is wrong. In the tabular case, with step sizes satisfying $\sum_k \alpha_k = \infty$ and $\sum_k \alpha_k^2 \lt \infty$, both converge to $V^\pi$. Between them lie **$n$-step returns**,
+$$
+G_t^{(n)} = \sum_{k=0}^{n-1} \gamma^k r_{t+k} + \gamma^n V(s_{t+n}),
+$$
+and exponentially weighted averages of these (TD($\lambda$)). The same interpolation reappears in Section 2 as generalized advantage estimation.
+
+One identity connects TD errors to advantages. If $V = V^\pi$ exactly, then
+$$
+\mathbb{E}\big[\delta_t \mid s_t, a_t\big] = r(s_t, a_t) + \gamma\, \mathbb{E}\big[V^\pi(s_{t+1}) \mid s_t, a_t\big] - V^\pi(s_t) = Q^\pi(s_t, a_t) - V^\pi(s_t) = A^\pi(s_t, a_t).
+$$
+The TD error of the true value function is an unbiased one-sample estimate of the advantage. This is the reason actor–critic methods learn a value function at all.
+
+### SARSA and Q-learning
+
+To improve a policy without a model, it is more convenient to learn action values, since acting greedily with respect to $Q$ needs no knowledge of $P$. Two TD methods do this.
+
+**SARSA** (named for the quintuple $s_t, a_t, r_t, s_{t+1}, a_{t+1}$ it uses) applies TD to the Bellman expectation equation for $Q^\pi$:
+$$
+Q(s_t, a_t) \leftarrow Q(s_t, a_t) + \alpha \big( r_t + \gamma Q(s_{t+1}, a_{t+1}) - Q(s_t, a_t) \big),
+$$
+where $a_{t+1}$ is the action the agent actually takes next. Combined with an $\varepsilon$-greedy policy with respect to the current $Q$, it is a sampled form of policy iteration.
+
+**Q-learning** (Watkins, 1989) applies TD to the Bellman *optimality* equation:
+$$
+Q(s_t, a_t) \leftarrow Q(s_t, a_t) + \alpha \big( r_t + \gamma \max_{a'} Q(s_{t+1}, a') - Q(s_t, a_t) \big).
+$$
+The target uses the best next action, whatever the agent actually does next. In the tabular case, Q-learning converges to $Q^\ast$ provided every state–action pair is updated infinitely often and the step sizes satisfy the conditions above — regardless of the policy used to collect the data.
+
+### On-policy and off-policy
+
+The difference between SARSA and Q-learning illustrates a distinction that runs through all of RL. The policy that generates the data is the **behaviour policy**; the policy whose value is being learned is the **target policy**. A method is **on-policy** if the two coincide and **off-policy** if they may differ.
+
+SARSA is on-policy: it learns the value of the exploring policy it follows. Q-learning is off-policy: it learns the value of the greedy policy while following any sufficiently exploratory behaviour. Off-policy learning is more data-efficient — old data, demonstrations and logs can all be reused — at the cost of a mismatch between the training distribution and the policy being evaluated. Correcting for it in policy-based methods requires reweighting by **importance ratios** $\pi(a \mid s)/\pi_{\mathrm{behaviour}}(a \mid s)$; the ratio $\rho_t(\theta)$ in PPO (Section 2) is an instance, for a behaviour policy that is the previous iterate $\pi_{\theta_{\mathrm{old}}}$.
+
+## Function approximation and the deadly triad
+
+Tables do not scale to large or continuous state spaces, so in practice one uses a parametrized estimate $V_w(s)$ or $Q_w(s, a)$ — linear in features, or a neural network — that generalizes across states. The natural TD update becomes
+$$
+w \leftarrow w + \alpha\, \delta_t\, \nabla_w V_w(s_t), \qquad \delta_t = r_t + \gamma V_w(s_{t+1}) - V_w(s_t).
+$$
+This is called a **semi-gradient** method: it differentiates the prediction $V_w(s_t)$ but treats the target $r_t + \gamma V_w(s_{t+1})$ as a constant, even though the target also depends on $w$. The update is therefore not the gradient of any fixed objective, and the usual guarantees of stochastic gradient descent do not apply.
+
+The consequence is a well-known instability.
+
+<Remark>
+**The deadly triad**, in Sutton and Barto's phrase, is the combination of
+
+1. **function approximation** that generalizes across states,
+2. **bootstrapping**, that is, targets built from current estimates as in TD and Q-learning, and
+3. **off-policy training**, where updates are made under a distribution different from that of the target policy.
+
+When all three are present, the value estimates can diverge to infinity, even for linear function approximation, a fixed target policy, and exact expected updates; Baird's counterexample is the classical demonstration. Removing any one ingredient restores stability in the linear case: tabular methods are safe, Monte Carlo targets reduce the problem to regression, and on-policy linear TD is known to converge. The triad describes a risk, not a certainty — many practical systems combine all three and work — and with nonlinear function approximation even on-policy TD lacks general guarantees.
+</Remark>
+
+The best-known demonstration that deep networks can nevertheless be trained this way is **DQN** (Mnih et al., 2015), which learned to play many Atari games from raw pixels with a single architecture and set of hyperparameters. It is Q-learning with a convolutional network $Q_w$ and two stabilizing devices. An **experience replay** buffer stores past transitions and trains on random minibatches, breaking the correlation between consecutive samples. A **target network** with parameters $w^-$, a copy of $w$ refreshed only periodically, supplies the bootstrap target, so that the loss
+$$
+\Big( r_t + \gamma \max_{a'} Q_{w^-}(s_{t+1}, a') - Q_w(s_t, a_t) \Big)^2
+$$
+is a regression onto a target that holds still for many updates. Much subsequent work on value-based deep RL consists of further fixes for the same instabilities and for the overestimation bias introduced by the max.
+
+## Three families of algorithms
+
+Classical RL algorithms fall into three broad families, according to what they learn and how they turn it into behaviour. **Value-based methods** learn $Q^\ast$ and act greedily with respect to it (Q-learning, DQN). **Policy-based methods** parametrize $\pi_\theta$ directly and ascend the gradient of $J(\theta)$, usually with a learned value function as a **critic**, giving **actor–critic** methods such as PPO (Section 2). **Model-based methods** learn or are given $P$ and $r$ and use them to plan or to generate simulated experience, as in Dyna-style training or MuZero's search.
+
+| | Value-based | Policy-based | Model-based |
+|---|---|---|---|
+| What is learned | Action values $Q$ | The policy $\pi_\theta$ (often plus a critic $V$) | Dynamics and reward, plus a policy or planner |
+| How actions are chosen | Maximize $Q$ over actions | Sample from $\pi_\theta$ | Plan or search in the model |
+| Large or continuous actions | Hard: needs a maximization at every step | Natural: any distribution that can be sampled | Depends on the planner |
+| Typical data regime | Off-policy, replay buffers | Mostly on-policy, fresh samples each update | Real data used to fit the model, simulated data for the rest |
+| Main strength | Sample reuse | Direct optimization of $J$; works with any differentiable policy | Sample efficiency when the model is accurate |
+| Main weakness | Deadly-triad instability; poor fit to huge action spaces | High-variance gradients; discards old data | Model errors compound and get exploited by the planner |
+
+The families overlap — actor–critic methods are both value- and policy-based, and a model needs one of the others to become behaviour — so the table describes emphasis, not boundaries.
+
+## Where this leads
+
+For a large pretrained model, the balance in that table shifts decisively. The action space — a vocabulary of many thousands of tokens per step, a continuous chunk of robot actions, a high-dimensional denoising update — is far too large for a value-based maximization. The policy already exists, as a pretrained network that is good enough to produce sensible behaviour before any RL, and what is wanted is to adjust it, not to learn one from scratch. Both facts favour policy-based methods, and almost everything in the rest of these notes is a variant of the policy gradient.
+
+The pieces of the classical setup map onto the modern one as follows.
+
+- **The policy is a pretrained network**: a language model, a vision-language-action model, or a diffusion or flow model, usually kept close to its pretrained starting point by a KL penalty towards a reference policy $\pi_{\mathrm{ref}}$.
+- **The episode is a generated object**: a token sequence for a language model, a sequence of action chunks for a robot, or a chain of denoising steps $x_T \to x_{T-1} \to \cdots \to x_0$ for an image or video model.
+- **The reward is a judge**: a reward model $r_\phi$ trained on human comparisons, a program that checks a final answer or runs unit tests, a success detector on a robot, or a learned aesthetic or alignment score for images. It typically arrives once, at the end of the episode.
+
+Section 2 develops policy gradients and PPO. Section 3 applies them to language models with a reward learned from human preferences, and covers methods such as DPO that skip the explicit RL loop. Section 4 replaces the learned reward with a verifier and studies critic-free, group-based methods. Sections 5 and 6 turn to robot policies and vision-language models, and Section 7 treats the denoising chain of a diffusion or flow model as an MDP. Throughout, how much RL adds beyond the pretrained model, and why, is an active research question, and we try to separate settled claims from open ones.
+
+Section 2 starts from the observation made earlier about trajectory probabilities: the dynamics drop out of the gradient of $\log p_\pi(\tau)$, so one can improve a policy without ever modelling its environment.
+
+Further reading: R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, 2nd ed. (MIT Press, 2018) — the standard text, and the source of the deadly-triad terminology; C. Szepesvári, *Algorithms for Reinforcement Learning* (2010), a short and rigorous account of the classical algorithms; D. P. Bertsekas, *Dynamic Programming and Optimal Control*, for the dynamic-programming and contraction theory; C. J. C. H. Watkins and P. Dayan, "Q-learning", *Machine Learning* (1992); V. Mnih et al., "Human-level control through deep reinforcement learning", *Nature* (2015).
