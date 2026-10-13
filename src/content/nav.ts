@@ -60,17 +60,6 @@ export const parts: Part[] = [
     ],
   },
   {
-    title: "RL for VLAs",
-    lectures: [
-      {
-        slug: "vla",
-        title: "Vision-Language-Action Models",
-        summary:
-          "Robot policies built on vision-language backbones: how actions are represented, why imitation alone falls short, and how RL fine-tuning is done in simulation and on real robots, including for diffusion and flow-matching action heads.",
-      },
-    ],
-  },
-  {
     title: "RL for VLMs",
     lectures: [
       {
@@ -89,6 +78,17 @@ export const parts: Part[] = [
         title: "Diffusion and Flow Models",
         summary:
           "Denoising as a sequential decision problem: policy gradients over sampling chains, reward backpropagation, Diffusion-DPO, turning flow-matching ODEs into SDEs for GRPO, and the extra difficulties of video.",
+      },
+    ],
+  },
+  {
+    title: "RL for VLAs",
+    lectures: [
+      {
+        slug: "vla",
+        title: "Vision-Language-Action Models",
+        summary:
+          "Robot policies built on vision-language backbones: how actions are represented, why imitation alone falls short, and how RL fine-tuning is done in simulation and on real robots, including for diffusion and flow-matching action heads.",
       },
     ],
   },

@@ -38,7 +38,7 @@ Binning each dimension at each time step produces many highly correlated tokens:
 
 ### Continuous heads
 
-The alternative is to keep actions continuous and use a generative model for them. A Gaussian head is the classical choice, but demonstrations are often **multimodal**: around an obstacle, half the operators go left and half go right, and a Gaussian fitted to both averages them into a collision. **Diffusion Policy** (Chi et al., 2023) showed that a denoising diffusion model over action sequences, conditioned on the observation, captures such multimodality well. Flow matching, as in $\pi_0$, learns a velocity field $v_\theta(x, \tau; o_t, \ell)$ that transports Gaussian noise to the action distribution along an ordinary differential equation; sampling integrates that ODE in a handful of steps. Section 9 develops both model families in detail.
+The alternative is to keep actions continuous and use a generative model for them. A Gaussian head is the classical choice, but demonstrations are often **multimodal**: around an obstacle, half the operators go left and half go right, and a Gaussian fitted to both averages them into a collision. **Diffusion Policy** (Chi et al., 2023) showed that a denoising diffusion model over action sequences, conditioned on the observation, captures such multimodality well. Flow matching, as in $\pi_0$, learns a velocity field $v_\theta(x, \tau; o_t, \ell)$ that transports Gaussian noise to the action distribution along an ordinary differential equation; sampling integrates that ODE in a handful of steps. Section 8 develops both model families in detail.
 
 ### Action chunking
 
@@ -170,7 +170,7 @@ Q_{\mathrm{ts}}(s_0, a_0^{n}) = \tfrac12 \Big( Q_\phi(s_0, a_0^{n}) + r_\psi(s_0
 $$
 The executed action is a max or softmax over the $N$ root candidates under $Q_{\mathrm{ts}}$. In the sparse-reward manipulation tasks of the paper no reward model is learned, so the $r_\psi$ terms drop out and the search is driven entirely by the critic evaluated at imagined states. The tree grows like $N^D M^D$, so it is pruned as a beam: at each depth only the $J$ partial paths with the largest discounted sum $\sum_{d'} \eta^{d'} Q_\phi(s_{d'}, a_{d'})$ are expanded.
 
-The authors build QWM on top of two off-policy learners, EXPO and RLPD, with two kinds of world model: a residual MLP predicting low-dimensional states, and, for pixel observations, a pretrained text-and-image-to-video generator (Wan2.2) fine-tuned on demonstrations to predict short future clips conditioned on robot actions. The second is the kind of video model whose RL fine-tuning Section 9 discusses, here repurposed as a simulator. They report gains in sample efficiency over the base learners on simulated manipulation benchmarks, from both state and pixel observations. Their ablations favour using the search in both data collection and evaluation, a shallow tree, and a small lookahead discount $\eta$.
+The authors build QWM on top of two off-policy learners, EXPO and RLPD, with two kinds of world model: a residual MLP predicting low-dimensional states, and, for pixel observations, a pretrained text-and-image-to-video generator (Wan2.2) fine-tuned on demonstrations to predict short future clips conditioned on robot actions. The second is the kind of video model whose RL fine-tuning Section 8 discusses, here repurposed as a simulator. They report gains in sample efficiency over the base learners on simulated manipulation benchmarks, from both state and pixel observations. Their ablations favour using the search in both data collection and evaluation, a shallow tree, and a small lookahead discount $\eta$.
 
 <Remark>
 QWM is a reminder of two facts from Section 2. First, it sits at the boundary between model-free and model-based RL: the model is used for **decision-time planning** only, never as a source of training targets, which is why its errors cannot accumulate in $Q_\phi$. They can still mislead the search, so the design keeps rollouts short and weights the imagined future lightly. Second, choosing the maximum of many noisy estimates is biased upwards, the maximization bias of Section 2. The authors observe that very large $N$ can hurt and attribute it to world-model and value errors being amplified across more candidates; more candidates give the search more chances to find an action that is overrated rather than good. Selecting among actions the policy proposes, rather than over the whole action space, limits the damage in the same way as critic-guided selection above.
@@ -184,7 +184,7 @@ To see why, consider a flow-matching head sampled by the ODE $\frac{dx}{d\tau} =
 
 ### Make denoising stochastic: a two-layer MDP
 
-Replace each deterministic integration step by a Gaussian one. Following Section 9, write the denoising chain from noise $x_T$ to the executed action chunk $x_0$; here $T$ counts denoising steps, not robot time steps, and we index it by $k$. Each step becomes
+Replace each deterministic integration step by a Gaussian one. Following Section 8, write the denoising chain from noise $x_T$ to the executed action chunk $x_0$; here $T$ counts denoising steps, not robot time steps, and we index it by $k$. Each step becomes
 $$
 x_{k-1} = \mu_\theta(x_k, k; o_t, \ell) + \sigma_k \xi_k, \qquad \xi_k \sim \mathcal{N}(0, I),
 $$
@@ -192,7 +192,7 @@ with $\sigma_k \gt 0$ either fixed or learned. Each transition now has an explic
 $$
 \nabla_\theta J(\theta) = \mathbb{E}\!\left[ \sum_{t} \hat A_t \sum_{k=1}^{T} \nabla_\theta \log p_\theta\!\left(x^{(t)}_{k-1} \mid x^{(t)}_{k}, k; o_t, \ell\right) \right],
 $$
-where $x^{(t)}$ is the denoising chain at robot step $t$ and every inner step of that chain shares the outer advantage $\hat A_t$. PPO applies with per-step ratios $\rho = p_\theta / p_{\theta_{\mathrm{old}}}$ for each inner transition. DPPO (Ren et al., 2024) develops this approach for diffusion policies, and Section 9 uses the same two-layer view, together with the conversion of a flow-matching ODE into a stochastic differential equation with the same marginals, to fine-tune image generators.
+where $x^{(t)}$ is the denoising chain at robot step $t$ and every inner step of that chain shares the outer advantage $\hat A_t$. PPO applies with per-step ratios $\rho = p_\theta / p_{\theta_{\mathrm{old}}}$ for each inner transition. DPPO (Ren et al., 2024) develops this approach for diffusion policies, and Section 8 uses the same two-layer view, together with the conversion of a flow-matching ODE into a stochastic differential equation with the same marginals, to fine-tune image generators.
 
 The price is a longer effective horizon (robot steps times denoising steps), extra variance from the injected noise, and the need to keep $\sigma_k$ small enough that the stochastic sampler still produces good actions.
 
@@ -230,6 +230,6 @@ Simulation removes these costs but introduces the **sim-to-real gap**. Rendering
 - **RL at scale on real robots.** Current real-world RL successes involve single tasks or small task families. Fine-tuning a generalist VLA across many tasks and robots with real interaction, without eroding its general abilities, is largely unexplored.
 - **Best practice for continuous heads.** The two-layer MDP, critic-based and noise-space approaches each have clear trade-offs, but there is no consensus on which to use, or on how to combine RL with the flow-matching training objective.
 
-Section 8 turns from acting to seeing: the same vision-language backbones, trained with preference and verifiable rewards to describe and reason about images without hallucinating.
+Section 7 turns from acting to seeing: the same vision-language backbones, trained with preference and verifiable rewards to describe and reason about images without hallucinating.
 
 Further reading: A. Brohan et al., *RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control* (2023); M. J. Kim et al., *OpenVLA: An Open-Source Vision-Language-Action Model* (2024); K. Black et al., *$\pi_0$: A Vision-Language-Action Flow Model for General Robot Control* (2024); C. Chi et al., *Diffusion Policy: Visuomotor Policy Learning via Action Diffusion* (RSS 2023); S. Ross, G. Gordon and J. A. Bagnell, *A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning* (AISTATS 2011); J. Luo et al., *SERL: A Software Suite for Sample-Efficient Robotic Reinforcement Learning* (2024); A. Z. Ren et al., *Diffusion Policy Policy Optimization* (2024); P. Dong, Y. Jia, C. Finn and D. Sadigh, *Q-Learning with World Models* (arXiv 2608.17163, 2026).
