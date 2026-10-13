@@ -1,6 +1,6 @@
-Sections 1 and 2 built reinforcement learning around value functions: estimate $Q^\pi$ or $Q^*$, then act greedily. This section takes the other route. We write down a parametric policy $\pi_\theta(a \mid s)$, regard the expected return $J(\theta)$ as a function of $\theta$, and climb its gradient. Turning that idea into a working algorithm takes three ingredients: a way to estimate the gradient from samples, a way to make the estimate less noisy, and a way to take large steps without wrecking the policy. The end point is **proximal policy optimization (PPO)**, the starting point for almost everything in Sections 4–8.
+Sections 1 and 2 built reinforcement learning around value functions: estimate $Q^\pi$ or $Q^*$, then act greedily. This section takes the other route. We write down a parametric policy $\pi_\theta(a \mid s)$, regard the expected return $J(\theta)$ as a function of $\theta$, and climb its gradient. Turning that idea into a working algorithm takes three ingredients: a way to estimate the gradient from samples, a way to make the estimate less noisy, and a way to take large steps without wrecking the policy. The end point is **proximal policy optimization (PPO)**, the starting point for almost everything in Sections 4–9.
 
-The section closes with KL-regularized RL and its closed-form optimal policy. That formula is behind direct preference optimization (Section 4) and its diffusion-model counterpart (Section 8), so it is derived carefully.
+The section closes with KL-regularized RL and its closed-form optimal policy. That formula is behind direct preference optimization (Section 4) and its diffusion-model counterpart (Section 9), so it is derived carefully.
 
 ## Why optimize the policy directly
 
@@ -46,13 +46,13 @@ $$
 
 <Example>
 
-For a **softmax policy** with logits $z = z_\theta(s)$, $\nabla_z \log \pi_\theta(a \mid s) = e_a - \pi_\theta(\cdot \mid s)$: raising $\log \pi_\theta(a \mid s)$ raises the logit of $a$ and lowers the others in proportion to their probability. A language model's next-token distribution has this form. For a **Gaussian policy** $\mathcal{N}(m_\theta(s), \sigma^2 I)$, $\nabla_\theta \log \pi_\theta(a \mid s) = \sigma^{-2} (\nabla_\theta m_\theta(s))^\top (a - m_\theta(s))$, which moves the mean towards rewarded actions. Each step of a stochastic diffusion sampler is a Gaussian of this kind (Section 8).
+For a **softmax policy** with logits $z = z_\theta(s)$, $\nabla_z \log \pi_\theta(a \mid s) = e_a - \pi_\theta(\cdot \mid s)$: raising $\log \pi_\theta(a \mid s)$ raises the logit of $a$ and lowers the others in proportion to their probability. A language model's next-token distribution has this form. For a **Gaussian policy** $\mathcal{N}(m_\theta(s), \sigma^2 I)$, $\nabla_\theta \log \pi_\theta(a \mid s) = \sigma^{-2} (\nabla_\theta m_\theta(s))^\top (a - m_\theta(s))$, which moves the mean towards rewarded actions. Each step of a stochastic diffusion sampler is a Gaussian of this kind (Section 9).
 
 </Example>
 
 Averaging the bracket over $N$ sampled trajectories gives an unbiased gradient estimate; stochastic gradient ascent with it is **REINFORCE** (Williams, 1992). It is correct but very noisy: every action is credited with the whole return, including rewards received before it was taken. The next section removes two sources of noise without introducing bias.
 
-The score function estimator is not the only way to differentiate an expectation. When samples can be written as $z = g_\theta(\varepsilon)$ with independent noise $\varepsilon$ and $f$ is differentiable, the **pathwise** (reparametrization) estimator $\mathbb{E}[\nabla_\theta f(g_\theta(\varepsilon))]$ usually has much lower variance. In RL the environment and reward are rarely differentiable, so it is seldom available; Section 8 returns to the contrast, since a differentiable reward model makes both options possible.
+The score function estimator is not the only way to differentiate an expectation. When samples can be written as $z = g_\theta(\varepsilon)$ with independent noise $\varepsilon$ and $f$ is differentiable, the **pathwise** (reparametrization) estimator $\mathbb{E}[\nabla_\theta f(g_\theta(\varepsilon))]$ usually has much lower variance. In RL the environment and reward are rarely differentiable, so it is seldom available; Section 9 returns to the contrast, since a differentiable reward model makes both options possible.
 
 ## Causality and baselines
 
@@ -277,7 +277,7 @@ This is the **Gibbs variational principle**, $\log \mathbb{E}_q[e^f] = \max_p ( 
 $$
 r(x, y) = \beta \log \frac{\pi^*(y \mid x)}{\pi_{\mathrm{ref}}(y \mid x)} + \beta \log Z(x).
 $$
-The term $\beta \log Z(x)$ cancels when two responses to the same prompt are compared. This is the starting point of DPO (Section 4) and Diffusion-DPO (Section 8).
+The term $\beta \log Z(x)$ cancels when two responses to the same prompt are compared. This is the starting point of DPO (Section 4) and Diffusion-DPO (Section 9).
 - **The optimum reweights; it does not invent.** $\pi^*$ is $\pi_{\mathrm{ref}}$ tilted by $e^{r/\beta}$, so responses with zero reference probability stay at zero. As $\beta \to \infty$, $\pi^* \to \pi_{\mathrm{ref}}$; as $\beta \to 0$ it concentrates on the reward-maximizing responses in the support of $\pi_{\mathrm{ref}}$.
 - **Nothing depends on what $y$ is.** The argument applies equally to token sequences, robot trajectories, or a whole denoising chain $x_T, \dots, x_0$.
 
@@ -316,7 +316,7 @@ PPO with a KL penalty is the baseline that later methods are measured against, a
 
 - **Sample efficiency.** PPO is on-policy: each batch is used for a few epochs and discarded, which dominates the cost when rollouts are expensive. Large systems often also generate rollouts with a separate inference engine whose log-probabilities differ slightly from the trainer's, so nominally on-policy data is mildly off-policy; how best to correct for this is an active question.
 - **The cost of the critic.** For a language model the critic is typically a network comparable in size to the policy, roughly doubling memory and compute. It must predict the final reward from a partial response, a hard regression problem, and a poor critic injects bias through GAE. This motivates the critic-free methods of Section 5, which replace $V_\psi$ by an average over $K$ sampled responses $y^{(1)}, \dots, y^{(K)}$ to the same prompt.
-- **Credit assignment with sparse rewards.** With one scalar at the end of a long response and $\gamma = \lambda = 1$, every token receives the same signal up to the baseline. Finer credit needs an accurate critic or denser rewards; process rewards (Section 5) and step-level rewards in robotics (Section 6) pursue the latter.
+- **Credit assignment with sparse rewards.** With one scalar at the end of a long response and $\gamma = \lambda = 1$, every token receives the same signal up to the baseline. Finer credit needs an accurate critic or denser rewards; process rewards (Section 5) and step-level rewards in robotics (Section 7) pursue the latter.
 - **Over-optimization.** The policy optimizes the reward it is given, not the one intended. The KL penalty slows exploitation of a learned reward model but does not prevent it, and choosing $\beta$ is largely empirical (Section 4).
 - **What the clip really does.** The trust-region motivation is clean, but the clipped objective is a heuristic whose success depends on implementation choices. Asymmetric clipping, sequence-level ratios and other constraints all appear in later sections; which choices matter, and why, is not settled.
 

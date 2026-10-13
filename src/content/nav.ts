@@ -51,6 +51,12 @@ export const parts: Part[] = [
         summary:
           "Replacing a learned reward with a checker: group-relative advantages and GRPO, the critic-free family it belongs to, process versus outcome rewards, and what RL does and does not add to a pretrained model.",
       },
+      {
+        slug: "on-policy-distillation",
+        title: "On-Policy Distillation",
+        summary:
+          "Learning from a teacher on the student's own samples: why off-policy distillation compounds errors, the reverse KL as a dense per-token reward, how it sits between supervised fine-tuning and RL, and its uses in post-training and in distilling generators.",
+      },
     ],
   },
   {
