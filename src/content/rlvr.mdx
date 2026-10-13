@@ -10,22 +10,21 @@ A **verifier** for a task is a deterministic program $v(x, y)$ that takes a prom
 
 The standard examples:
 
-- **Mathematics with final answers.** The prompt carries a reference answer $a^\star(x)$. The verifier extracts the final answer from $y$ (for example, the contents of a designated box or tag), normalizes it, and checks equivalence with $a^\star(x)$, by string matching or symbolic comparison.
-- **Code with unit tests.** The verifier runs the program in $y$ against a test suite in a sandbox. The reward is $1$ if all tests pass, or the fraction that pass.
-- **Formal proofs.** The response is a proof in a system such as Lean, and the verifier is the proof checker. This is the strongest kind of verifier: acceptance means the statement is proved.
-- **Format and instruction constraints.** "Answer in exactly three bullet points", "respond in JSON matching this schema", "put the reasoning inside these tags". Each constraint is a predicate on $y$ that a short program can evaluate.
+- **Mathematics with final answers.** The verifier extracts the final answer from $y$, normalizes it, and compares it with a reference answer $a^\star(x)$ by string matching or symbolic equivalence.
+- **Code with unit tests.** The verifier runs the program in a sandbox; the reward is $1$ if all tests pass, or the fraction that pass.
+- **Formal proofs.** The verifier is a proof checker such as Lean's; acceptance means the statement is proved.
+- **Format constraints.** "Respond in JSON matching this schema", "put the reasoning inside these tags": predicates on $y$ that a short program evaluates.
 
 What these have in common is an asymmetry: producing a correct answer is hard, checking one is easy. That asymmetry is what lets RL improve the model, because the training signal does not require anyone to know how the answer was found.
 
 <Remark name="Hard to hack is not unhackable">
 A verifier removes the failure mode of Section 3 in which the policy exploits errors of a learned network. It does not remove reward hacking. A policy optimizes whatever the program actually computes, and the program is rarely exactly the intended specification:
 
-- An answer extractor that takes the last number in the response rewards listing many candidate numbers; a lenient equivalence check can accept answers that are not equivalent.
-- A test suite with few tests rewards programs that special-case the visible inputs; an agent with file-system access may be able to edit the tests or the harness instead of the solution.
-- Answer-only rewards cannot distinguish a correct answer reached by sound reasoning from one reached by flawed reasoning or a lucky guess. On multiple-choice or small-answer-space problems, guessing earns real reward.
-- Format rewards are easily maximized in ways that satisfy the letter of the constraint.
+- A lenient answer extractor or equivalence check accepts answers that are not correct.
+- A small test suite rewards programs that special-case the visible inputs; an agent with file-system access may edit the tests instead of the solution.
+- Answer-only rewards cannot tell sound reasoning from flawed reasoning or a lucky guess, and on small answer spaces guessing earns real reward.
 
-Only a sound and complete checker, like a proof assistant with escape hatches disabled, is genuinely unhackable, and even then the policy may learn to prefer statements it can prove over ones it was asked to prove if the task allows that. In practice verifiers must be audited the way reward models are, by reading samples from the trained policy.
+Only a sound checker, such as a proof assistant with escape hatches disabled, is close to unhackable. In practice verifiers must be audited the way reward models are, by reading samples from the trained policy.
 </Remark>
 
 ## The RLVR setup
@@ -99,7 +98,7 @@ $$
 $$
 </Definition>
 
-The KL estimator $\hat k$ uses the identity that for $u = \pi_{\mathrm{ref}}/\pi_\theta$ evaluated at a token sampled from $\pi_\theta$, $\mathbb{E}[u - 1] = 0$ and $\mathbb{E}[-\log u]$ is the per-token KL divergence. So $\hat k$ is an unbiased estimator of $\mathrm{KL}(\pi_\theta \,\|\, \pi_{\mathrm{ref}})$ at that state, and since $u - 1 - \log u \ge 0$ it is never negative, unlike the plain $-\log u$. (Strictly, the tokens are sampled from $\pi_{\theta_{\mathrm{old}}}$, not $\pi_\theta$; within one round of updates the two are close.)
+For $u = \pi_{\mathrm{ref}}/\pi_\theta$ at a token sampled from $\pi_\theta$, $\mathbb{E}[u - 1] = 0$ and $\mathbb{E}[-\log u]$ is the per-token KL, so $\hat k = u - 1 - \log u$ is an unbiased estimator of $\mathrm{KL}(\pi_\theta \,\|\, \pi_{\mathrm{ref}})$ that, unlike $-\log u$, is never negative. (Strictly, tokens come from $\pi_{\theta_{\mathrm{old}}}$, which is close to $\pi_\theta$ within one round of updates.)
 
 Compared with Section 3's PPO, the KL term has moved. There, the per-token KL penalty was subtracted from the reward and so entered the advantages and the critic's targets. In GRPO the advantage depends only on the verifier, and the KL term is a separate regularizer in the loss, differentiated directly.
 
@@ -214,7 +213,7 @@ The landmark result for RLVR is DeepSeek-R1 (DeepSeek-AI, 2025). Its first model
 
 Several things happened without being asked for. Response length grew steadily during training, and behaviours such as re-checking intermediate results, backtracking and trying alternative approaches appeared in the chains of thought, while accuracy on reasoning tasks rose substantially. The reward said nothing about how to reason; long chains of thought emerged because they raised the probability of a correct answer.
 
-R1-Zero also had problems: its reasoning was often hard to read and mixed languages. The full **R1** pipeline added a small amount of supervised "cold-start" data with readable long chains of thought, then reasoning-oriented RL (with an added reward for language consistency), then rejection sampling to build a larger supervised set combined with general data, then a final RL stage covering both reasoning and general helpfulness. The report also found that distilling R1's outputs into smaller models by supervised fine-tuning worked well, and better than running the same RL directly on the small models.
+R1-Zero's reasoning was often hard to read and mixed languages. The full **R1** pipeline added a small "cold-start" supervised set of readable long chains of thought, reasoning-oriented RL with a language-consistency reward, rejection sampling to build a larger supervised set, and a final RL stage covering reasoning and general helpfulness. The report also found that distilling R1's outputs into smaller models by supervised fine-tuning worked well, and better than running the same RL directly on the small models.
 
 Later analyses, including the Dr. GRPO paper, have qualified the story. Some base models already exhibit self-reflection behaviours before any RL, and part of the length growth can come from the loss normalization described above. That the method works is not in doubt; exactly what it is teaching is still being worked out.
 

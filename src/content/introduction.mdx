@@ -52,9 +52,7 @@ A **Markov decision process (MDP)** is a tuple $(\mathcal{S}, \mathcal{A}, P, r,
 The **Markov property** is the assumption that $s_{t+1}$ and $r_t$ are conditionally independent of the history $s_0, a_0, \dots, s_{t-1}, a_{t-1}$ given $(s_t, a_t)$.
 </Definition>
 
-The Markov property is a statement about what we choose to call the state, not about the world: any process becomes Markov if the state is taken to be the entire history. That is exactly what happens for language models below. When the agent sees only part of the state (a robot's camera image rather than the full configuration of the scene), the right model is a partially observable MDP; we will mostly treat the observation history as the state and not dwell on the distinction.
-
-For clean statements we assume throughout that $\mathcal{S}$ and $\mathcal{A}$ are finite and rewards are bounded. Most results extend to general spaces under measurability and compactness conditions that we will not need.
+The Markov property is a statement about what we call the state, not about the world: any process becomes Markov if the state is the entire history, which is exactly what happens for language models below. When the agent sees only part of the state, as a robot with a camera does, the right model is a partially observable MDP; we mostly treat the observation history as the state. For clean statements we assume that $\mathcal{S}$ and $\mathcal{A}$ are finite and rewards are bounded; most results extend to general spaces under technical conditions.
 
 ### Policies, trajectories and returns
 
@@ -73,10 +71,8 @@ The **return** from time $t$ is the discounted sum of future rewards,
 $$
 G_t = \sum_{k \ge 0} \gamma^k r_{t+k} = r_t + \gamma G_{t+1}.
 $$
-The **objective** of a policy is its expected return from the start, $J(\pi) = \mathbb{E}_{\tau \sim \pi}[G_0]$, written $J(\theta)$ for a parametrized policy.
+The **objective** of a policy is its expected return from the start, $J(\pi) = \mathbb{E}_{\tau \sim \pi}[G_0]$, written $J(\theta)$ for a parametrized policy. The recursion $G_t = r_t + \gamma G_{t+1}$ is the seed of every Bellman equation below.
 </Definition>
-
-The recursion $G_t = r_t + \gamma G_{t+1}$ is the seed of every Bellman equation below.
 
 The discount factor plays two roles. Mathematically, $\gamma < 1$ makes $G_t$ finite for bounded rewards, since $|G_t| \le R_{\max}/(1 - \gamma)$, and it is what makes the dynamic programming operators below contractions. Practically, it expresses a preference for reward sooner rather than later, and it shortens the effective horizon to roughly $1/(1 - \gamma)$ steps, which reduces variance at the price of biasing the learner towards short-term behaviour.
 
@@ -91,7 +87,7 @@ Let a language model $\pi_\theta$ answer a prompt $x$ with a response $y = (y_1,
 - the reward is zero at every step except the last, where it equals a sequence-level score $r(x, y)$ — a learned reward model, or a program that checks the answer;
 - there is no discounting, $\gamma = 1$.
 
-So LLM generation is an **episodic, undiscounted, finite-horizon MDP with a sparse terminal reward**, and the return from every step is the same number, $G_t = r(x, y)$. The state includes the whole prefix, so the Markov property holds by construction and the time step is part of the state. Notice what is easy and what is hard. The dynamics are trivial, so there is nothing to learn about the environment. But the action space is enormous, and all the credit for a long response arrives in a single scalar at the end. Sections 2–4 are largely about coping with that last fact.
+So LLM generation is an **episodic, undiscounted, finite-horizon MDP with a sparse terminal reward**, and the return from every step is the same number, $G_t = r(x, y)$. The state includes the whole prefix, so the Markov property holds by construction and the time step is part of the state. The dynamics are trivial, so there is nothing to learn about the environment; what is hard is the enormous action space and the fact that all the credit for a long response arrives in one scalar at the end.
 </Example>
 
 ## Value functions and the Bellman equations
