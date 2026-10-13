@@ -1,0 +1,231 @@
+Sections 4 and 5 improved a language model with a reward: a learned preference score, or a verifier's verdict. A different and very common situation is that a better model already exists. A large **teacher** is too expensive to serve; we want a small **student** that behaves like it. This is **knowledge distillation**, and the obvious way to do it is supervised: generate text with the teacher and fine-tune the student on it. That works, but has the defect Section 7 analyzes for robot imitation: the student is trained on prefixes written by the teacher and run on prefixes written by itself.
+
+Reinforcement learning has the opposite profile. It trains on the policy's own samples, so the training and deployment distributions agree, but its signal is poor: one scalar for an entire response, from which credit for thousands of tokens must be recovered by averaging over samples. **On-policy distillation** takes the best of both. The student generates; the teacher then scores every token the student wrote. This section derives the resulting dense per-token reward from the reverse KL divergence, explains what the choice of divergence does, and surveys where the idea is used, from language-model post-training to one-step image generators.
+
+## Distillation and the choice of states
+
+Throughout, $x$ is a prompt, $y = (y_1, \dots, y_T)$ a response and $s_t = (x, y_{\lt t})$ the token state, as in Section 4. The student is $\pi_\theta(y_t \mid s_t)$ and the teacher is a fixed autoregressive model $p(y_t \mid s_t)$ over the same vocabulary, with sequence probabilities
+$$
+\pi_\theta(y \mid x) = \prod_{t=1}^{T} \pi_\theta(y_t \mid s_t), \qquad p(y \mid x) = \prod_{t=1}^{T} p(y_t \mid s_t).
+$$
+The token MDP has deterministic transitions, so a state is just a prefix, and the distribution over states is determined entirely by who wrote the prefix.
+
+### Off-policy distillation
+
+Every distillation objective in this section has the form
+$$
+\mathbb{E}_{x}\, \mathbb{E}_{y \sim \nu(\cdot \mid x)}\Big[ \sum_{t=1}^{T} D\big( p(\cdot \mid s_t),\ \pi_\theta(\cdot \mid s_t) \big) \Big],
+$$
+a per-token discrepancy $D$ between teacher and student next-token distributions, averaged over prefixes drawn from some distribution $\nu$. The classical methods differ in $\nu$ and $D$.
+
+- **Supervised fine-tuning on teacher samples.** Draw $y \sim p(\cdot \mid x)$ (or take the teacher's greedy or beam-search output) and maximize $\log \pi_\theta(y \mid x)$. Kim and Rush (2016) called this **sequence-level knowledge distillation**, in contrast to word-level distillation on a fixed dataset.
+- **Token-level soft targets.** Following Hinton et al. (2015), replace the one-hot target at each position by the teacher's full next-token distribution and minimize the cross-entropy $-\sum_{a} p(a \mid s_t) \log \pi_\theta(a \mid s_t)$, which equals $\mathrm{KL}(p(\cdot \mid s_t) \,\|\, \pi_\theta(\cdot \mid s_t))$ up to a term independent of $\theta$. The prefixes come from a dataset or from teacher samples.
+
+In both cases $\nu$ is the data distribution or the teacher, never the student. These methods are **off-policy**: the student never sees its own prefixes during training.
+
+### Compounding errors
+
+The analogy with Section 7 is exact. The teacher is the expert, sampling a token is taking an action, and off-policy distillation is behaviour cloning: it controls the student's error on states the teacher visits. At inference the student writes its own prefixes; one token the teacher would rarely have produced puts it in a state its training covered poorly, where further departures are more likely. Section 7 showed that for a deterministic expert this mechanism can make the gap in performance grow like $T^2 \epsilon$ rather than $T \epsilon$, where $\epsilon$ is the per-step error on expert states; in language modelling the phenomenon is usually called **exposure bias**. Long chains of thought make $T$ large.
+
+The remedy is also the one from Section 7: DAgger rolls out the learner and asks the expert what it would have done in the states the learner actually visited. For language models this is unusually cheap: asking the teacher what it would have done at every prefix of a student response is one teacher forward pass over that response, since a transformer computes all next-token distributions of a sequence in parallel.
+
+### What RL offers and what it lacks
+
+RL with verifiable rewards (Section 5) is on-policy and needs no teacher, but it receives $r(x, y)$, typically one bit, once per response; credit for the $T$ tokens must be worked out by comparing samples, and a group whose $K$ samples all receive the same reward contributes nothing. Distillation tells the student at every position which tokens a strong model would favour. On-policy distillation combines the sampling distribution of RL with the density of distillation's supervision.
+
+## Forward and reverse KL
+
+At the sequence level there are two natural divergences between student and teacher.
+
+<Definition name="Forward and reverse KL">
+For a prompt $x$, the **forward KL** from teacher to student and the **reverse KL** are
+$$
+\mathrm{KL}(p \,\|\, \pi_\theta) = \mathbb{E}_{y \sim p(\cdot \mid x)}\Big[ \log \frac{p(y \mid x)}{\pi_\theta(y \mid x)} \Big], \qquad \mathrm{KL}(\pi_\theta \,\|\, p) = \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)}\Big[ \log \frac{\pi_\theta(y \mid x)}{p(y \mid x)} \Big].
+$$
+Both are averaged over prompts $x$ in the training objective.
+</Definition>
+
+The forward KL is an expectation over teacher samples, and since $\mathbb{E}_{y \sim p}[\log p(y \mid x)]$ does not depend on $\theta$, minimizing it is the same as maximizing $\mathbb{E}_{y \sim p}[\log \pi_\theta(y \mid x)]$: sequence-level distillation is exactly forward-KL minimization, estimated from teacher samples. The reverse KL is an expectation over student samples, which is where on-policy training enters.
+
+### Decomposition into per-token terms
+
+Because sequence log-probabilities are sums of token log-probabilities, both divergences split along the prefixes.
+
+<Result name="Chain rule for sequence KL">
+For autoregressive $p$ and $\pi_\theta$ over the same vocabulary,
+$$
+\mathrm{KL}(p \,\|\, \pi_\theta) = \mathbb{E}_{y \sim p}\Big[ \sum_{t=1}^{T} \mathrm{KL}\big( p(\cdot \mid s_t) \,\|\, \pi_\theta(\cdot \mid s_t) \big) \Big], \qquad \mathrm{KL}(\pi_\theta \,\|\, p) = \mathbb{E}_{y \sim \pi_\theta}\Big[ \sum_{t=1}^{T} \mathrm{KL}\big( \pi_\theta(\cdot \mid s_t) \,\|\, p(\cdot \mid s_t) \big) \Big].
+$$
+</Result>
+
+*Proof.* Take the reverse KL; the forward case is the same with the roles exchanged. Writing the log-ratio of sequence probabilities as a sum,
+$$
+\mathrm{KL}(\pi_\theta \,\|\, p) = \sum_{t} \mathbb{E}_{y \sim \pi_\theta}\Big[ \log \frac{\pi_\theta(y_t \mid s_t)}{p(y_t \mid s_t)} \Big].
+$$
+Condition the $t$-th term on the prefix $s_t$. Given $s_t$, the token $y_t$ is distributed as $\pi_\theta(\cdot \mid s_t)$, so the conditional expectation of the log-ratio is $\mathrm{KL}(\pi_\theta(\cdot \mid s_t) \,\|\, p(\cdot \mid s_t))$. The tower property gives the result. (Responses of different lengths are handled by treating the end-of-sequence token as an ordinary token, after which no further terms appear.) $\square$
+
+The per-token divergence is reversed, and, more importantly, the prefixes come from the teacher in the first case and from the student in the second. Off-policy distillation optimizes the left identity; on-policy distillation the right.
+
+### Mode covering and mode seeking
+
+If the student can represent the teacher exactly, both divergences are minimized by $\pi_\theta = p$. The difference appears when it cannot, which is the normal situation for a student much smaller than its teacher.
+
+A sequence the teacher produces with probability $p(y)$ costs $p(y) \log(1/\pi_\theta(y))$, which blows up as the student's probability goes to zero. So the forward KL forces the student to put mass wherever the teacher does: it is **mode covering**, and a student that cannot fit all the teacher's modes spreads itself across them, including over the regions between them. The reverse KL is infinite if $\pi_\theta(y) \gt 0$ where $p(y) = 0$, and a sequence the student produces costs $\pi_\theta(y) \log(\pi_\theta(y)/p(y))$, which is large when the teacher finds $y$ unlikely. It forces the student to stay where the teacher has mass but does not penalize it for ignoring some of the teacher's modes: it is **mode seeking**.
+
+<Example name="Two modes and an independent student">
+Let responses have two tokens from $\lbrace A, B \rbrace$ and let the teacher produce $AA$ or $BB$, each with probability $\tfrac12$. The teacher is consistent: whatever it writes first, it repeats. Restrict the student to ignore its prefix, so that $\pi_a(y) = q(y_1)\, q(y_2)$ with $q(A) = a$.
+
+*Forward KL.* Minimizing $\mathrm{KL}(p \,\|\, \pi_a)$ means maximizing $\mathbb{E}_p[\log \pi_a(y)] = \log a + \log(1 - a)$, whose maximizer is $a = \tfrac12$. The student then outputs $AB$ and $BA$ half the time, sequences the teacher never produces. The divergence at the optimum is $\tfrac12 \log \tfrac{1/2}{1/4} + \tfrac12 \log \tfrac{1/2}{1/4} = \log 2$.
+
+*Reverse KL.* $\mathrm{KL}(\pi_a \,\|\, p)$ is infinite unless $\pi_a(AB) = \pi_a(BA) = a(1 - a) = 0$, so $a \in \lbrace 0, 1 \rbrace$. The student always writes $AA$ (or always $BB$), and the divergence is $\log \tfrac{1}{1/2} = \log 2$.
+
+The divergences are equal, but the forward-KL student is incoherent half the time, while the reverse-KL student is always coherent and has lost one of the teacher's two behaviours.
+</Example>
+
+For generation, where every output is read, the reverse-KL behaviour is often preferable: a capacity-limited student that produces what the teacher would produce, even if not everything the teacher could produce. The price is diversity, which matters when the model will be sampled many times (Section 5's pass@k).
+
+## Reverse KL as reinforcement learning
+
+The reverse KL is an expectation under the student's own distribution of a sum of per-token terms. That is the form of an expected return.
+
+<Result name="Reverse KL as an expected return">
+In the token MDP, define the per-token reward
+$$
+r_t = \log p(y_t \mid s_t) - \log \pi_\theta(y_t \mid s_t).
+$$
+With $\gamma = 1$, the return of a response is $\sum_{t} r_t = \log p(y \mid x) - \log \pi_\theta(y \mid x)$, and
+$$
+J(\theta) = \mathbb{E}_{x}\, \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)}\Big[ \sum_{t=1}^{T} r_t \Big] = -\,\mathbb{E}_x\big[ \mathrm{KL}\big( \pi_\theta(\cdot \mid x) \,\|\, p(\cdot \mid x) \big) \big].
+$$
+Equivalently, $J(\theta) = \mathbb{E}_{x}\big[ \mathbb{E}_{y \sim \pi_\theta}[\log p(y \mid x)] + \mathcal{H}(\pi_\theta(\cdot \mid x)) \big]$, where $\mathcal{H}$ is the entropy of the student's sequence distribution.
+</Result>
+
+The proof is the definition of the reverse KL. Each token is rewarded by how much more likely the teacher finds it than the student does: positive when the student is under-confident in a token the teacher likes, negative when it writes a token the teacher considers unlikely. The second form shows the structure: maximize the teacher's log-likelihood of what the student writes, plus an entropy bonus. Without the entropy term the optimum would be the teacher's single most likely response. This is an instance of Section 3's KL-regularized RL. For any reference policy $\pi_{\mathrm{ref}}$,
+$$
+\mathbb{E}_{y \sim \pi_\theta}\Big[ \log \frac{p(y \mid x)}{\pi_{\mathrm{ref}}(y \mid x)} \Big] - \mathrm{KL}\big( \pi_\theta \,\|\, \pi_{\mathrm{ref}} \big) = -\,\mathrm{KL}\big( \pi_\theta \,\|\, p \big),
+$$
+so reverse-KL distillation is KL-regularized RL with reward $\log(p/\pi_{\mathrm{ref}})$ and $\beta = 1$, and the closed-form optimum $\pi_{\mathrm{ref}}\, e^{r/\beta} / Z$ of Section 3 is $p$, as it should be. Taking $\pi_{\mathrm{ref}}$ uniform on a finite set of sequences recovers the entropy form.
+
+### The policy gradient
+
+The reward depends on $\theta$, so the policy gradient theorem of Section 3 needs a small check.
+
+<Result name="Gradient of the reverse KL">
+With $G_t = \sum_{t' \ge t} r_{t'}$ the reward-to-go,
+$$
+\nabla_\theta J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\Big[ \sum_{t=1}^{T} G_t\, \nabla_\theta \log \pi_\theta(y_t \mid s_t) \Big],
+$$
+where the rewards $r_{t'}$ are evaluated at the current $\theta$ and treated as constants.
+</Result>
+
+*Proof.* Fix $x$ and write $J = \mathbb{E}_{y \sim \pi_\theta}[f_\theta(y)]$ with $f_\theta(y) = \log p(y \mid x) - \log \pi_\theta(y \mid x)$. Then
+$$
+\nabla_\theta J = \mathbb{E}_{y \sim \pi_\theta}\big[ f_\theta(y)\, \nabla_\theta \log \pi_\theta(y \mid x) \big] + \mathbb{E}_{y \sim \pi_\theta}\big[ \nabla_\theta f_\theta(y) \big].
+$$
+The second term is $-\mathbb{E}_{y \sim \pi_\theta}[\nabla_\theta \log \pi_\theta(y \mid x)] = 0$, by the score identity. In the first, expand $f_\theta = \sum_{t'} r_{t'}$ and $\nabla_\theta \log \pi_\theta(y \mid x) = \sum_t \nabla_\theta \log \pi_\theta(y_t \mid s_t)$. For $t' \lt t$ the reward $r_{t'}$ depends only on $y_{\le t'}$, which is part of $s_t$, so conditioning on $s_t$ gives $\mathbb{E}[r_{t'} \nabla_\theta \log \pi_\theta(y_t \mid s_t)] = \mathbb{E}\big[ r_{t'}\, \mathbb{E}[\nabla_\theta \log \pi_\theta(y_t \mid s_t) \mid s_t] \big] = 0$. Only the terms with $t' \ge t$ survive. $\square$
+
+Two points deserve emphasis. First, unlike in RLVR, where $G_t = r(x, y)$ for every $t$, the reward-to-go matters: a token earns credit for all later rewards, because it determines the prefixes on which later tokens are scored, so a token that leads the student where it disagrees badly with the teacher is penalized even if the teacher found the token itself acceptable. Second, the reward must be used as a fixed weight on the score function, not differentiated as a loss. Section 3 noted that the single-sample estimator $k_1 = \log(\pi_\theta / \pi_{\mathrm{ref}})$ has zero expected gradient when differentiated directly; with $\pi_{\mathrm{ref}} = p$, the sum of $-r_t$ is exactly $k_1$.
+
+Baselines, PPO-style ratios and clipping, and several samples per prompt can all be added as in Sections 3–5.
+
+### Exact per-token KL and the myopic gradient
+
+The reward $r_t$ is a one-sample estimate of the per-token divergence. When the teacher's full next-token distribution is available (which requires the teacher and student to share a vocabulary), the per-token reverse KL can instead be computed exactly,
+$$
+\mathrm{KL}\big( \pi_\theta(\cdot \mid s_t) \,\|\, p(\cdot \mid s_t) \big) = \sum_{a} \pi_\theta(a \mid s_t) \log \frac{\pi_\theta(a \mid s_t)}{p(a \mid s_t)},
+$$
+a sum over the vocabulary rather than one sampled token. The same is true of the forward per-token KL, or of any divergence between the two next-token distributions. A common objective is then
+$$
+\mathcal{L}(\theta) = \mathbb{E}_x\, \mathbb{E}_{y \sim \pi_\theta}\Big[ \sum_{t=1}^{T} D\big( \pi_\theta(\cdot \mid s_t),\ p(\cdot \mid s_t) \big) \Big],
+$$
+with $D$ differentiated through $\pi_\theta(\cdot \mid s_t)$ and the sampled prefixes treated as fixed data. This is how DAgger treats its rollouts, and it is a different gradient from the true gradient of $\mathcal{L}$. Writing $D_t$ for the per-token term, the score-function argument above gives
+$$
+\nabla_\theta \mathcal{L} = \mathbb{E}\Big[ \sum_t \nabla_\theta D_t \Big|_{s_t \text{ fixed}} \Big] + \mathbb{E}\Big[ \sum_{t} \nabla_\theta \log \pi_\theta(y_t \mid s_t) \sum_{t' \gt t} D_{t'} \Big],
+$$
+where the second sum is over $t' \gt t$ because $D_{t'}$ depends on $y_t$ only through the prefix $s_{t'}$. The fixed-prefix update keeps the first term and drops the second, which is the effect of the student's choices on where it will be evaluated next. In the RL language it is policy gradient with discount $\gamma = 0$: each token is optimized for its own divergence only. For the reverse KL, the single-sample version of the same myopic update is unbiased for the first term, since for fixed $s_t$
+$$
+\mathbb{E}_{y_t \sim \pi_\theta(\cdot \mid s_t)}\big[ -r_t\, \nabla_\theta \log \pi_\theta(y_t \mid s_t) \big] = \nabla_\theta\, \mathrm{KL}\big( \pi_\theta(\cdot \mid s_t) \,\|\, p(\cdot \mid s_t) \big),
+$$
+using $\mathbb{E}_{\pi_\theta}[\nabla_\theta \log \pi_\theta] = 0$ once more.
+
+Is dropping the second term harmful? If the student can represent the teacher, no: setting $\pi_\theta(\cdot \mid s) = p(\cdot \mid s)$ at every prefix makes every $D_t$ zero, which minimizes both objectives, and it is a stationary point of the myopic update as well. Under limited capacity the full gradient also steers the student towards prefixes on which it can imitate the teacher well, which the myopic update ignores. Whether that is worth the extra variance of the full reward-to-go is an empirical question; implementations differ, and both versions are on-policy in the sense that matters for exposure bias.
+
+## Methods
+
+### Generalized knowledge distillation
+
+Agarwal et al. (2024), in *On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes*, formulated **generalized knowledge distillation** (GKD) in the template of the first section, with prefixes from a mixture of sources: with probability $\lambda$ a training sequence is generated by the student, and otherwise it is taken from a fixed dataset of outputs; $\lambda = 0$ is off-policy distillation and $\lambda = 1$ fully on-policy. The divergence is a free choice among forward KL, reverse KL and a generalized Jensen–Shannon divergence with a parameter that interpolates between the two. Like DAgger, GKD does not differentiate through the student's sampling, so its update is the fixed-prefix one above. Its central message is that training on the student's own mistakes, corrected by the teacher, fixes the train–inference mismatch, and that the best divergence depends on the task.
+
+### MiniLLM
+
+Gu et al. (2024), in *MiniLLM: Knowledge Distillation of Large Language Models*, argued for the reverse KL on mode-seeking grounds: a small student should not spread probability over regions the teacher considers unlikely. They minimized the sequence-level reverse KL by policy gradient, with the per-token log-ratio rewards derived above, and added stabilizers aimed at the variance and biases of that estimator, among them computing the immediate per-token term exactly over the vocabulary, mixing teacher tokens into the sampling distribution, and normalizing by length.
+
+### In post-training pipelines
+
+On-policy distillation is now widely used to produce small models from large ones. The Qwen3 technical report (2025), for example, describes building its smaller models by distillation from its flagship models in two phases: an off-policy phase on teacher outputs, followed by an on-policy phase in which the student generates and is trained to match the teacher's logits on its own responses. A 2025 blog post from Thinking Machines Lab, *On-Policy Distillation* (K. Lu et al.), describes the per-token reverse-KL recipe with teacher log-probabilities as a cheap alternative to RL for training reasoning, and as a way to recover behaviours, such as instruction following, that a model loses during further training on new domain data.
+
+## Three ways to train a student
+
+| | SFT / off-policy distillation | RL with verifiable rewards | On-policy distillation |
+|---|---|---|---|
+| Training prefixes | data or teacher samples | student samples | student samples |
+| Signal | target tokens or teacher distributions | one scalar per response | teacher log-probabilities at every token |
+| Needs a teacher | yes, or demonstrations | no | yes, queried on student outputs |
+| Needs a verifier or reward | no | yes | no |
+| Cost per step | student forward–backward pass on stored data | student generation, often $K$ per prompt, plus checking | student generation plus one teacher forward pass |
+| Can exceed the source | no | yes, up to what exploration finds | no, the target is the teacher |
+| Main failure modes | exposure bias, compounding errors | sparse signal, uninformative groups, reward hacking | teacher errors copied, diversity loss, tokenizer constraints |
+
+The middle column gets the least information per sample but is the only one whose target is the task itself.
+
+## Practical issues
+
+### Cost
+
+Per training step, on-policy distillation costs what an RL step costs, minus the verifier and plus one teacher forward pass over each sampled response. Student generation usually dominates, as in Section 5. Off-policy distillation is cheaper per step, since teacher samples are generated once and reused; relative to RL, each sample carries information at every position and there are no uninformative groups. Storing the teacher's full distribution at every position is costly for large vocabularies, so implementations sometimes keep only the sampled token's log-probability or a truncated set of top tokens.
+
+### Tokenizers
+
+Per-token rewards and per-token divergences require the teacher and student to share a vocabulary, so that $p(y_t \mid s_t)$ and $\pi_\theta(y_t \mid s_t)$ refer to the same event. Models from the same family usually do. Otherwise only the sequence-level quantity survives, approximately, by letting the teacher score the student's text under its own tokenization; that is RL with the single reward $\log p(y \mid x)$ per response, and most of the density is lost.
+
+### Capacity and diversity
+
+The mode-seeking behaviour in the example above is what a small student does with the reverse KL. It is often desirable, but it reduces diversity, and in reasoning tasks lost diversity is lost pass@k. Mixing in forward-KL terms, as GKD's divergence family allows, or mixing in off-policy data, are ways to trade coherence against coverage. Unlike reward maximization in Section 5, the objective contains an entropy term, so it does not by itself drive the student to a point mass; but it offers no protection for modes the student has already dropped.
+
+### The teacher as a ceiling, and combining with RL
+
+The target of distillation is the teacher. A student that matches the teacher perfectly also reproduces its errors, and nothing in the objective rewards it for doing better. RL has no such ceiling. The two combine naturally. With a verifiable reward $r(x, y)$ and the teacher in the role of the reference policy, the KL-regularized objective of Sections 3 and 5 becomes
+$$
+\mathbb{E}_{y \sim \pi_\theta}\big[ r(x, y) \big] - \beta\, \mathrm{KL}\big( \pi_\theta(\cdot \mid x) \,\|\, p(\cdot \mid x) \big),
+$$
+whose optimum over all policies is $p(y \mid x)\, e^{r(x, y)/\beta} / Z(x)$, the teacher tilted towards correct answers. Large $\beta$ is pure on-policy distillation; small $\beta$ is RL with the teacher as dense shaping. In token terms the per-token reward is $\beta\big(\log p(y_t \mid s_t) - \log \pi_\theta(y_t \mid s_t)\big)$, plus $r(x, y)$ at the last token, exactly the shape of Section 4's per-token rewards with the teacher in place of $\pi_{\mathrm{ref}}$. Distillation can also simply come first, as a starting point for RL.
+
+### Self-distillation and context distillation
+
+The teacher does not have to be a larger model. It can be the same model given an advantage the student will not have at inference, such as a long system prompt, retrieved documents or a reference solution. Distilling such a teacher into the plain model, often called **context distillation**, moves the behaviour the context induces into the weights; on-policy, the model samples without the context and scores its samples with it. The caveat is that the teacher must be reliable on the states the student visits, which a model conditioned on privileged information need not be.
+
+## Beyond language models
+
+The recipe needs three things: a student that can be sampled, a teacher that can score the student's samples, and a divergence that decomposes into terms the teacher can evaluate. These are available far beyond text.
+
+**Vision-language models.** A VLM is a language model with image tokens in the prompt (Section 8), so everything above applies unchanged, with the teacher conditioned on the same image. On-policy, a student that hallucinates an object is corrected on its own hallucinated prefix.
+
+**Diffusion and flow models.** A many-step diffusion model (Section 9) is an excellent teacher and an expensive sampler, and distilling it into a one- or few-step generator is one of the main ways to make it fast. Yin et al. (2024), in *One-step Diffusion with Distribution Matching Distillation* (DMD), train a generator $x_0 = G_\theta(z)$ by minimizing a reverse KL between the generator's output distribution $q_\theta$ and the teacher's distribution $p$. Writing $\mathrm{KL}(q_\theta \,\|\, p) = \mathbb{E}_z\big[ \log q_\theta(G_\theta(z)) - \log p(G_\theta(z)) \big]$ and differentiating along the sample path,
+$$
+\nabla_\theta\, \mathrm{KL}(q_\theta \,\|\, p) = \mathbb{E}_z\Big[ \big( \nabla_x \log q_\theta(x) - \nabla_x \log p(x) \big)^{\!\top} \frac{\partial G_\theta(z)}{\partial \theta} \Big|_{x = G_\theta(z)} \Big],
+$$
+because the remaining term, the derivative of $\log q_\theta$ with respect to $\theta$ at fixed $x$, has expectation zero under $q_\theta$ by the score identity. The gradient is the difference between the student's score and the teacher's score, evaluated **at the student's samples** and backpropagated through the generator. The teacher, being a diffusion model, supplies $\nabla \log p$; a second diffusion model trained online on the generator's outputs supplies $\nabla \log q_\theta$; both are evaluated on noised samples across noise levels, where the scores are well defined. (DMD also adds a regression loss on pairs of noise and teacher output.) This is on-policy reverse-KL distillation with a pathwise rather than score-function gradient (the contrast of Section 3), possible because the generator is differentiable and the teacher provides a gradient, not just a log-probability.
+
+**Robot policies.** In simulation a teacher policy can be trained by RL with access to privileged state that no real robot has, such as exact object poses, contact forces or terrain geometry. It is then distilled into a student that sees only cameras and proprioception by labelling the student's own states with the teacher's actions: DAgger (Section 7) with a learned expert. *Learning by Cheating* (Chen et al., 2019) is an early example in autonomous driving, and the pattern has become standard in sim-to-real locomotion and manipulation. RL is easier with privileged state, and on-policy labelling is what makes the imitation robust.
+
+## Open problems
+
+- **Which divergence, and on which prefixes.** Forward, reverse and interpolated divergences, and mixtures of on- and off-policy data, all have support; a principled account of which to use for a given student, teacher and task is missing.
+- **Myopic versus full gradients.** The fixed-prefix update ignores the student's influence on its future states. When this matters, and how to include it with acceptable variance, is not well understood.
+- **Going beyond the teacher.** How to schedule teacher signal and verifiable reward, and how to stop the teacher's errors anchoring the student, are open.
+- **Different tokenizers and modalities.** Dense supervision currently relies on a shared vocabulary; cross-tokenizer and cross-architecture on-policy distillation is immature.
+- **What is transferred.** Whether a small student acquires the teacher's reasoning or only its surface patterns on the student's distribution, the analogue of Section 5's sharpening question, is largely unexamined.
+
+Section 7 leaves text behind: the policy now outputs robot actions, rewards come from the physical world or a simulator, and the distinction drawn here, between imitating on the expert's states and on the learner's own, reappears as a central difficulty of robot learning.
+
+Further reading: G. Hinton, O. Vinyals and J. Dean, *Distilling the Knowledge in a Neural Network* (2015); Y. Kim and A. M. Rush, *Sequence-Level Knowledge Distillation* (EMNLP 2016); S. Ross, G. Gordon and J. A. Bagnell, *A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning* (AISTATS 2011); R. Agarwal et al., *On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes* (ICLR 2024); Y. Gu et al., *MiniLLM: Knowledge Distillation of Large Language Models* (ICLR 2024); T. Yin et al., *One-step Diffusion with Distribution Matching Distillation* (CVPR 2024); D. Chen et al., *Learning by Cheating* (CoRL 2019).
