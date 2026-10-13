@@ -12,8 +12,8 @@ export default function Contents() {
           Modern Reinforcement Learning
         </h1>
         <p className="mt-5 font-serif text-lg leading-relaxed text-muted">
-          Each section takes one kind of model — a language model, a robot
-          policy, a vision-language model, an image or video generator — and
+          Each section takes one kind of model — a language model, a
+          vision-language model, an image or video generator, a robot policy — and
           asks the same questions of it: what the policy, the action and the
           reward are, how the classical objective has to change to fit, which
           algorithms make it work at scale, and where the open problems lie.

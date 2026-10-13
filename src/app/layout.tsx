@@ -5,7 +5,7 @@ import "./globals.css";
 const SITE_URL = "https://peter-chl.github.io/modern_rl";
 const SITE_NAME = "modern_rl";
 const DESCRIPTION =
-  "Notes on modern reinforcement learning — Markov decision processes and policy gradients, then RL for language models, vision-language-action models, vision-language models, and image and video generators — with the arguments written out in full.";
+  "Notes on modern reinforcement learning — Markov decision processes and policy gradients, then RL for language models, vision-language models, image and video generators, and vision-language-action models — with the arguments written out in full.";
 
 export const metadata: Metadata = {
   title: {

@@ -1,8 +1,8 @@
 # modern_rl
 
 Notes on modern reinforcement learning — Markov decision processes and
-policy gradients, then RL for large language models, vision-language-action
-models, vision-language models, and image and video generators — with the
+policy gradients, then RL for large language models, vision-language
+models, image and video generators, and vision-language-action models — with the
 arguments written out in full.
 
 Live site: https://peter-chl.github.io/modern_rl
