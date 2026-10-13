@@ -30,7 +30,7 @@ after clipping $a_d$ to $[\ell_d, u_d]$, and each integer is assigned a token in
 $$
 \pi_\theta(a_t \mid o_t, \ell) = \prod_{d=1}^{D} \pi_\theta\!\left(b_{t,d} \mid o_t, \ell, b_{t,1}, \dots, b_{t,d-1}\right),
 $$
-trained with the usual cross-entropy loss. Two consequences matter for RL. First, the log-likelihood $\log \pi_\theta(a_t \mid o_t, \ell)$ is an exact, cheap sum of token log-probabilities, so every algorithm from Sections 2–4 applies unchanged: PPO ratios, GRPO advantages and KL penalties are computed exactly as for text. Second, the action is decoded one token at a time, which limits the control frequency and quantizes fine motion.
+trained with the usual cross-entropy loss. Two consequences matter for RL. First, the log-likelihood $\log \pi_\theta(a_t \mid o_t, \ell)$ is an exact, cheap sum of token log-probabilities, so every algorithm from Sections 3–5 applies unchanged: PPO ratios, GRPO advantages and KL penalties are computed exactly as for text. Second, the action is decoded one token at a time, which limits the control frequency and quantizes fine motion.
 
 ### Compressed tokens
 
@@ -38,7 +38,7 @@ Binning each dimension at each time step produces many highly correlated tokens:
 
 ### Continuous heads
 
-The alternative is to keep actions continuous and use a generative model for them. A Gaussian head is the classical choice, but demonstrations are often **multimodal**: around an obstacle, half the operators go left and half go right, and a Gaussian fitted to both averages them into a collision. **Diffusion Policy** (Chi et al., 2023) showed that a denoising diffusion model over action sequences, conditioned on the observation, captures such multimodality well. Flow matching, as in $\pi_0$, learns a velocity field $v_\theta(x, \tau; o_t, \ell)$ that transports Gaussian noise to the action distribution along an ordinary differential equation; sampling integrates that ODE in a handful of steps. Section 7 develops both model families in detail.
+The alternative is to keep actions continuous and use a generative model for them. A Gaussian head is the classical choice, but demonstrations are often **multimodal**: around an obstacle, half the operators go left and half go right, and a Gaussian fitted to both averages them into a collision. **Diffusion Policy** (Chi et al., 2023) showed that a denoising diffusion model over action sequences, conditioned on the observation, captures such multimodality well. Flow matching, as in $\pi_0$, learns a velocity field $v_\theta(x, \tau; o_t, \ell)$ that transports Gaussian noise to the action distribution along an ordinary differential equation; sampling integrates that ODE in a handful of steps. Section 8 develops both model families in detail.
 
 ### Action chunking
 
@@ -50,7 +50,7 @@ Most modern policies predict not one action but a **chunk** $a_{t:t+H} = (a_t, \
 | Multimodality | yes (categorical per token) | yes | yes |
 | Exact log-likelihood | yes | yes | no (see below) |
 | Decoding cost | many sequential tokens | fewer tokens | a few network evaluations |
-| Off-the-shelf RL from Sections 2–4 | directly | directly | needs modification |
+| Off-the-shelf RL from Sections 3–5 | directly | directly | needs modification |
 
 ## The robot as a decision process
 
@@ -106,8 +106,8 @@ For robots this analysis says three things. Errors compound, so demonstrations m
 
 RL needs a reward, and in robotics there is no checker as clean as a unit test.
 
-- **Simulator success signals.** In simulation the full state is known, so success is a predicate on it: the block is inside the bowl, the drawer is open. This is the closest analogue of the verifiable rewards of Section 4, and it is where most RL fine-tuning of VLAs has been done.
-- **Learned success detectors.** On real hardware one trains a binary classifier on images labelled success or failure, often from a modest number of examples per task, and uses its output as the reward. A pretrained VLM can serve the same role when prompted with the instruction and the final image. Like the reward models of Section 3, such detectors can be exploited: a policy may learn to produce images that look like success.
+- **Simulator success signals.** In simulation the full state is known, so success is a predicate on it: the block is inside the bowl, the drawer is open. This is the closest analogue of the verifiable rewards of Section 5, and it is where most RL fine-tuning of VLAs has been done.
+- **Learned success detectors.** On real hardware one trains a binary classifier on images labelled success or failure, often from a modest number of examples per task, and uses its output as the reward. A pretrained VLM can serve the same role when prompted with the instruction and the final image. Like the reward models of Section 4, such detectors can be exploited: a policy may learn to produce images that look like success.
 - **Human signals.** A person can label success at the end of each episode, or intervene during it; an intervention marks the preceding behaviour as bad and supplies corrective actions.
 - **Progress estimators.** To densify a sparse reward, one can learn a model that predicts how far along the task an observation is, for example from the time index within successful demonstrations, and use its increments as shaped reward. This helps exploration but can again be gamed. If the shaped reward has the potential-based form $\gamma \Phi(s_{t+1}) - \Phi(s_t)$ for a function $\Phi$ of the state, the optimal policy is unchanged; other forms of shaping carry no such guarantee.
 
@@ -117,11 +117,11 @@ All current approaches start from an imitation-trained policy and use RL to impr
 
 ### Online RL in simulation
 
-With token-based VLAs and a simulator, the recipe of Section 4 transfers almost verbatim. The prompt is the initial observation and instruction, the response is the episode, the token-level policy is the product formula above, and the reward is the success indicator. Because a simulator can be reset to exactly the same initial configuration, group-relative methods are natural: draw an initial state $s_0 \sim \mu$, roll out $K$ episodes from it with returns $G^{(1)}, \dots, G^{(K)}$, and use
+With token-based VLAs and a simulator, the recipe of Section 5 transfers almost verbatim. The prompt is the initial observation and instruction, the response is the episode, the token-level policy is the product formula above, and the reward is the success indicator. Because a simulator can be reset to exactly the same initial configuration, group-relative methods are natural: draw an initial state $s_0 \sim \mu$, roll out $K$ episodes from it with returns $G^{(1)}, \dots, G^{(K)}$, and use
 $$
 \hat A^{(i)} = \frac{G^{(i)} - \operatorname{mean}_j G^{(j)}}{\operatorname{std}_j G^{(j)}}
 $$
-as the advantage of every action token in episode $i$, inside a clipped PPO-style objective with ratios $\rho_t(\theta)$. Alternatively one trains a value head and uses PPO with generalized advantage estimation, as in Section 2. As in Section 4, groups in which all episodes succeed or all fail give zero advantage and no signal, so the curriculum of initial states matters.
+as the advantage of every action token in episode $i$, inside a clipped PPO-style objective with ratios $\rho_t(\theta)$. Alternatively one trains a value head and uses PPO with generalized advantage estimation, as in Section 3. As in Section 5, groups in which all episodes succeed or all fail give zero advantage and no signal, so the curriculum of initial states matters.
 
 Several 2025 papers follow this pattern, including SimpleVLA-RL and VLA-RL, which apply GRPO- or PPO-style updates to token-based VLAs on simulated manipulation benchmarks. The broad qualitative findings are that RL from sparse success rewards improves a reasonable imitation policy, particularly on states and object configurations under-represented in the demonstrations, and that it can discover behaviours absent from the demonstrations. How much of this transfers to real robots, and how it compares with simply collecting more demonstrations, is not yet settled.
 
@@ -141,7 +141,7 @@ The residual sees an MDP whose dynamics include the base policy, so any off-poli
 
 ### Offline RL and reward-weighted imitation
 
-The cheapest option uses no new interaction at all beyond logged rollouts: collect episodes from the current policy (and possibly earlier ones), label them with rewards, and update by a weighted form of imitation. The simplest version, **filtered behaviour cloning**, keeps only successful episodes and clones them. A principled generalization comes from the KL-regularized objective of Section 3. Maximizing $\mathbb{E}_{a \sim \pi}[A(s, a)] - \beta\, \mathrm{KL}(\pi(\cdot \mid s) \,\|\, \pi_{\mathrm{ref}}(\cdot \mid s))$ over all distributions $\pi$ gives
+The cheapest option uses no new interaction at all beyond logged rollouts: collect episodes from the current policy (and possibly earlier ones), label them with rewards, and update by a weighted form of imitation. The simplest version, **filtered behaviour cloning**, keeps only successful episodes and clones them. A principled generalization comes from the KL-regularized objective of Section 4. Maximizing $\mathbb{E}_{a \sim \pi}[A(s, a)] - \beta\, \mathrm{KL}(\pi(\cdot \mid s) \,\|\, \pi_{\mathrm{ref}}(\cdot \mid s))$ over all distributions $\pi$ gives
 $$
 \pi^\star(a \mid s) = \frac{1}{Z(s)} \, \pi_{\mathrm{ref}}(a \mid s) \exp\!\left( \frac{A(s, a)}{\beta} \right).
 $$
@@ -157,13 +157,13 @@ Finally, one can leave the policy untouched and learn a critic $Q_\phi(o, a)$ by
 
 ## RL for diffusion and flow action heads
 
-For a token-based VLA the log-likelihood is a sum of log-softmax values. For a continuous head it is not available, and this breaks the policy-gradient algorithms of Section 2, which all need $\nabla_\theta \log \pi_\theta(a \mid s)$.
+For a token-based VLA the log-likelihood is a sum of log-softmax values. For a continuous head it is not available, and this breaks the policy-gradient algorithms of Section 3, which all need $\nabla_\theta \log \pi_\theta(a \mid s)$.
 
 To see why, consider a flow-matching head sampled by the ODE $\frac{dx}{d\tau} = v_\theta(x, \tau; o, \ell)$ from Gaussian noise to an action chunk. The map from noise to action is deterministic, so the density of the action is the pushforward of a Gaussian through that map. By the instantaneous change-of-variables formula, its log-density is the Gaussian log-density of the initial noise minus the integral of the divergence $\nabla_x \cdot v_\theta$ along the trajectory. This is computable in principle, but it requires integrating a Jacobian trace through the whole sampling path and differentiating through it, which is expensive and noisy; and with the few, coarse integration steps used for fast control, the formula for the continuous ODE does not even describe the sampler actually being run. There are two families of fixes.
 
 ### Make denoising stochastic: a two-layer MDP
 
-Replace each deterministic integration step by a Gaussian one. Following Section 7, write the denoising chain from noise $x_T$ to the executed action chunk $x_0$; here $T$ counts denoising steps, not robot time steps, and we index it by $k$. Each step becomes
+Replace each deterministic integration step by a Gaussian one. Following Section 8, write the denoising chain from noise $x_T$ to the executed action chunk $x_0$; here $T$ counts denoising steps, not robot time steps, and we index it by $k$. Each step becomes
 $$
 x_{k-1} = \mu_\theta(x_k, k; o_t, \ell) + \sigma_k \xi_k, \qquad \xi_k \sim \mathcal{N}(0, I),
 $$
@@ -171,7 +171,7 @@ with $\sigma_k \gt 0$ either fixed or learned. Each transition now has an explic
 $$
 \nabla_\theta J(\theta) = \mathbb{E}\!\left[ \sum_{t} \hat A_t \sum_{k=1}^{T} \nabla_\theta \log p_\theta\!\left(x^{(t)}_{k-1} \mid x^{(t)}_{k}, k; o_t, \ell\right) \right],
 $$
-where $x^{(t)}$ is the denoising chain at robot step $t$ and every inner step of that chain shares the outer advantage $\hat A_t$. PPO applies with per-step ratios $\rho = p_\theta / p_{\theta_{\mathrm{old}}}$ for each inner transition. DPPO (Ren et al., 2024) develops this approach for diffusion policies, and Section 7 uses the same two-layer view, together with the conversion of a flow-matching ODE into a stochastic differential equation with the same marginals, to fine-tune image generators.
+where $x^{(t)}$ is the denoising chain at robot step $t$ and every inner step of that chain shares the outer advantage $\hat A_t$. PPO applies with per-step ratios $\rho = p_\theta / p_{\theta_{\mathrm{old}}}$ for each inner transition. DPPO (Ren et al., 2024) develops this approach for diffusion policies, and Section 8 uses the same two-layer view, together with the conversion of a flow-matching ODE into a stochastic differential equation with the same marginals, to fine-tune image generators.
 
 The price is a longer effective horizon (robot steps times denoising steps), extra variance from the injected noise, and the need to keep $\sigma_k$ small enough that the stochastic sampler still produces good actions.
 
@@ -189,7 +189,7 @@ Which of these works best for large VLAs is an open question; the two-layer form
 
 On real hardware the cost of an episode is not only time. Exploration can collide with the environment, damage objects or the robot, and leave the scene in a state that a person must restore. Practical systems therefore restrict exploration: workspace limits and force thresholds that end an episode, small residual or noise-space policies with bounded outputs, KL or trust-region constraints to the base policy, and human interventions that both stop unsafe behaviour and become training data. **Resets** are a separate bottleneck: a method that needs hundreds of episodes from varied initial configurations needs someone, or a learned reset policy, to produce them.
 
-Simulation removes these costs but introduces the **sim-to-real gap**. Rendering differs from camera images, and contact, friction and deformable objects are modelled only approximately. A policy optimized against a simulator will exploit its inaccuracies exactly as a policy optimized against a learned reward model exploits that model's errors (Section 3). Standard mitigations are domain randomization of visual and physical parameters and simulated scenes built to reproduce the real one closely. The VLA backbone helps with the visual part of the gap, since pretrained visual features are fairly robust to appearance changes, but it does not help with dynamics.
+Simulation removes these costs but introduces the **sim-to-real gap**. Rendering differs from camera images, and contact, friction and deformable objects are modelled only approximately. A policy optimized against a simulator will exploit its inaccuracies exactly as a policy optimized against a learned reward model exploits that model's errors (Section 4). Standard mitigations are domain randomization of visual and physical parameters and simulated scenes built to reproduce the real one closely. The VLA backbone helps with the visual part of the gap, since pretrained visual features are fairly robust to appearance changes, but it does not help with dynamics.
 
 | | Imitation (BC) | RL in simulation | RL on real hardware |
 |---|---|---|---|
@@ -205,10 +205,10 @@ Simulation removes these costs but introduces the **sim-to-real gap**. Rendering
 
 - **Credit assignment over long horizons.** Success rewards arrive after hundreds of steps. Chunking helps, as do learned progress rewards, but neither is a general solution, and the interaction between chunk length and value learning is poorly understood.
 - **Rewards that generalize.** A success detector per task does not scale to a generalist policy. VLM-based judges are general but noisy and exploitable, and how to make them reliable reward signals is open.
-- **What RL adds.** As for the reasoning models of Section 4, it is unclear how much RL creates new capabilities versus sharpening behaviours already present in the imitation policy. Comparisons with equal-effort data collection are rare.
+- **What RL adds.** As for the reasoning models of Section 5, it is unclear how much RL creates new capabilities versus sharpening behaviours already present in the imitation policy. Comparisons with equal-effort data collection are rare.
 - **RL at scale on real robots.** Current real-world RL successes involve single tasks or small task families. Fine-tuning a generalist VLA across many tasks and robots with real interaction, without eroding its general abilities, is largely unexplored.
 - **Best practice for continuous heads.** The two-layer MDP, critic-based and noise-space approaches each have clear trade-offs, but there is no consensus on which to use, or on how to combine RL with the flow-matching training objective.
 
-Section 6 turns from acting to seeing: the same vision-language backbones, trained with preference and verifiable rewards to describe and reason about images without hallucinating.
+Section 7 turns from acting to seeing: the same vision-language backbones, trained with preference and verifiable rewards to describe and reason about images without hallucinating.
 
 Further reading: A. Brohan et al., *RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control* (2023); M. J. Kim et al., *OpenVLA: An Open-Source Vision-Language-Action Model* (2024); K. Black et al., *$\pi_0$: A Vision-Language-Action Flow Model for General Robot Control* (2024); C. Chi et al., *Diffusion Policy: Visuomotor Policy Learning via Action Diffusion* (RSS 2023); S. Ross, G. Gordon and J. A. Bagnell, *A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning* (AISTATS 2011); J. Luo et al., *SERL: A Software Suite for Sample-Efficient Robotic Reinforcement Learning* (2024); A. Z. Ren et al., *Diffusion Policy Policy Optimization* (2024).

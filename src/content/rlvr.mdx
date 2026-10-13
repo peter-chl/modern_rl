@@ -1,6 +1,6 @@
-Section 3 trained language models against a reward model learned from human comparisons. That reward is a proxy: it is only as good as the comparisons it was fitted to, and a policy optimized hard against it finds the places where it is wrong. For a large and important class of tasks there is a better option. If the task has an answer that can be **checked** — a number that either equals the reference or does not, a program that either passes its tests or does not, a proof that a proof assistant either accepts or rejects — then the reward can be computed by a program instead of predicted by a network.
+Section 4 trained language models against a reward model learned from human comparisons. That reward is a proxy: it is only as good as the comparisons it was fitted to, and a policy optimized hard against it finds the places where it is wrong. For a large and important class of tasks there is a better option. If the task has an answer that can be **checked** — a number that either equals the reference or does not, a program that either passes its tests or does not, a proof that a proof assistant either accepts or rejects — then the reward can be computed by a program instead of predicted by a network.
 
-This section studies reinforcement learning against such programmatic rewards, usually called **reinforcement learning with verifiable rewards** (RLVR). The policy-gradient machinery is the same as in Section 2, but the setting changes which parts of it matter. Rewards are sparse, typically binary, and arrive only at the end of a long response; the response itself contains a chain of reasoning that nobody supervises directly; and the cheapest source of variance reduction is not a learned critic but other samples for the same prompt. These features lead to GRPO and its relatives, to a set of subtle biases in how their losses are normalized, and to an unsettled question about what RL actually adds to a pretrained model.
+This section studies reinforcement learning against such programmatic rewards, usually called **reinforcement learning with verifiable rewards** (RLVR). The policy-gradient machinery is the same as in Section 3, but the setting changes which parts of it matter. Rewards are sparse, typically binary, and arrive only at the end of a long response; the response itself contains a chain of reasoning that nobody supervises directly; and the cheapest source of variance reduction is not a learned critic but other samples for the same prompt. These features lead to GRPO and its relatives, to a set of subtle biases in how their losses are normalized, and to an unsettled question about what RL actually adds to a pretrained model.
 
 ## Verifiable rewards
 
@@ -18,7 +18,7 @@ The standard examples:
 What these have in common is an asymmetry: producing a correct answer is hard, checking one is easy. That asymmetry is what lets RL improve the model, because the training signal does not require anyone to know how the answer was found.
 
 <Remark name="Hard to hack is not unhackable">
-A verifier removes the failure mode of Section 3 in which the policy exploits errors of a learned network. It does not remove reward hacking. A policy optimizes whatever the program actually computes, and the program is rarely exactly the intended specification:
+A verifier removes the failure mode of Section 4 in which the policy exploits errors of a learned network. It does not remove reward hacking. A policy optimizes whatever the program actually computes, and the program is rarely exactly the intended specification:
 
 - A lenient answer extractor or equivalence check accepts answers that are not correct.
 - A small test suite rewards programs that special-case the visible inputs; an agent with file-system access may edit the tests instead of the solution.
@@ -29,7 +29,7 @@ Only a sound checker, such as a proof assistant with escape hatches disabled, is
 
 ## The RLVR setup
 
-As in Section 3, a language model is a policy over tokens. The state is $s_t = (x, y_{\lt t})$, the action is the next token $y_t$, the transition appends $y_t$ deterministically, and an episode ends at an end-of-sequence token or a length limit. Take $\gamma = 1$.
+As in Section 4, a language model is a policy over tokens. The state is $s_t = (x, y_{\lt t})$, the action is the next token $y_t$, the transition appends $y_t$ deterministically, and an episode ends at an end-of-sequence token or a length limit. Take $\gamma = 1$.
 
 <Definition name="RLVR objective">
 Given a prompt distribution $\mathcal{D}$, a verifiable reward $r(x, y)$, a reference policy $\pi_{\mathrm{ref}}$ (usually the initial model) and $\beta \ge 0$, RLVR maximizes
@@ -45,7 +45,7 @@ For a binary verifier, write $p_\theta(x) = \Pr_{y \sim \pi_\theta(\cdot \mid x)
 
 ## Dropping the critic
 
-The PPO recipe for language models (Section 3) trains a value network $V_\psi(s_t)$, usually initialized from the reward model or the policy, and computes per-token advantages with GAE. In RLVR this critic is expensive and buys little:
+The PPO recipe for language models (Section 4) trains a value network $V_\psi(s_t)$, usually initialized from the reward model or the policy, and computes per-token advantages with GAE. In RLVR this critic is expensive and buys little:
 
 - **Memory and compute.** The critic is another model of comparable size, with its own optimizer state and its own forward and backward passes.
 - **Values on token states are hard to learn.** $V^\pi(s_t)$ is the probability that the current policy, continuing from a half-written chain of thought, eventually reaches a correct answer. That is nearly as hard as solving the problem, and it shifts as the policy changes.
@@ -55,7 +55,7 @@ The alternative is to sample several responses per prompt and let them serve as 
 
 ### Baselines from a group of samples
 
-Fix a prompt $x$ and draw $K \ge 2$ independent responses $y^{(1)}, \dots, y^{(K)} \sim \pi_\theta(\cdot \mid x)$, with rewards $r_i = r(x, y^{(i)})$. The REINFORCE estimator of Section 2 with a baseline $b_i$ is
+Fix a prompt $x$ and draw $K \ge 2$ independent responses $y^{(1)}, \dots, y^{(K)} \sim \pi_\theta(\cdot \mid x)$, with rewards $r_i = r(x, y^{(i)})$. The REINFORCE estimator of Section 3 with a baseline $b_i$ is
 $$
 \hat g = \frac{1}{K} \sum_{i=1}^K \big( r_i - b_i \big)\, \nabla_\theta \log \pi_\theta(y^{(i)} \mid x), \qquad \nabla_\theta \log \pi_\theta(y \mid x) = \sum_{t=1}^{T} \nabla_\theta \log \pi_\theta(y_t \mid s_t).
 $$
@@ -100,7 +100,7 @@ $$
 
 For $u = \pi_{\mathrm{ref}}/\pi_\theta$ at a token sampled from $\pi_\theta$, $\mathbb{E}[u - 1] = 0$ and $\mathbb{E}[-\log u]$ is the per-token KL, so $\hat k = u - 1 - \log u$ is an unbiased estimator of $\mathrm{KL}(\pi_\theta \,\|\, \pi_{\mathrm{ref}})$ that, unlike $-\log u$, is never negative. (Strictly, tokens come from $\pi_{\theta_{\mathrm{old}}}$, which is close to $\pi_\theta$ within one round of updates.)
 
-Compared with Section 3's PPO, the KL term has moved: there it was subtracted from the reward and entered the advantages; here the advantage depends only on the verifier and the KL term is a separate regularizer in the loss.
+Compared with Section 4's PPO, the KL term has moved: there it was subtracted from the reward and entered the advantages; here the advantage depends only on the verifier and the KL term is a separate regularizer in the loss.
 
 The numerator $r_i - \mathrm{mean}$ is the mean baseline analyzed above, so before the other modifications the update is a rescaled REINFORCE with a nearly unbiased baseline. The denominator and the $1/|y^{(i)}|$ factor are another matter, and are the subject of the next section.
 
@@ -130,7 +130,7 @@ repeat M times (optionally over minibatches):
 
 The three methods compare as follows.
 
-| | PPO (Section 3) | RLOO | GRPO |
+| | PPO (Section 4) | RLOO | GRPO |
 |---|---|---|---|
 | Value network | yes, trained alongside the policy | none | none |
 | Samples per prompt | one is enough | $K \ge 2$ | $K \ge 2$ |
@@ -275,6 +275,6 @@ The two interact with training: sharpening raises pass@1, but if it lowers pass@
 - **Faithfulness of reasoning.** Nothing in the reward requires the chain of thought to reflect the computation that produced the answer.
 - **Agentic settings.** Tool use and interaction with an environment turn one response into a multi-turn episode, bringing back the full MDP of Section 1.
 
-Section 5 leaves text behind: the policy now outputs robot actions, rewards come from the physical world or a simulator, and many of the same critic-free and group-based ideas reappear in a setting where sampling is expensive.
+Section 6 leaves text behind: the policy now outputs robot actions, rewards come from the physical world or a simulator, and many of the same critic-free and group-based ideas reappear in a setting where sampling is expensive.
 
 Further reading: Z. Shao et al., *DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models* (2024); DeepSeek-AI, *DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning* (2025); A. Ahmadian et al., *Back to Basics: Revisiting REINFORCE Style Optimization for Learning from Human Feedback in LLMs* (2024); Q. Yu et al., *DAPO: An Open-Source LLM Reinforcement Learning System at Scale* (2025); Z. Liu et al., *Understanding R1-Zero-Like Training: A Critical Perspective* (2025); H. Lightman et al., *Let's Verify Step by Step* (2023); Y. Yue et al., *Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?* (2025).

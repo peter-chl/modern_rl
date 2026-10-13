@@ -1,6 +1,6 @@
 A text-to-image model trained by maximum likelihood learns to reproduce its training distribution. That is not quite what its users want. They want images that look good, that contain the three red cubes the prompt asked for, that spell the words on the sign correctly, and that people prefer when shown side by side. None of these targets is a likelihood. Each is easier to *score* than to demonstrate, and that is exactly the situation in which reinforcement learning helps.
 
-This section treats diffusion and flow-matching generators as policies. Sampling is already sequential: a diffusion model turns noise into an image through many small stochastic denoising steps, which can be read as actions in a Markov decision process whose only reward arrives at the end. The tools of Sections 2–4 then apply almost verbatim. There is also a tool with no counterpart for language models: when the reward is differentiable in the image, one can backpropagate through the sampler itself.
+This section treats diffusion and flow-matching generators as policies. Sampling is already sequential: a diffusion model turns noise into an image through many small stochastic denoising steps, which can be read as actions in a Markov decision process whose only reward arrives at the end. The tools of Sections 3–5 then apply almost verbatim. There is also a tool with no counterpart for language models: when the reward is differentiable in the image, one can backpropagate through the sampler itself.
 
 ## Why fine-tune generators with rewards
 
@@ -13,7 +13,7 @@ usually with a penalty keeping $p_\theta$ close to $p_{\mathrm{ref}}$. Typical r
 - **Aesthetics.** A small regression head on top of a frozen image encoder, trained on human aesthetic ratings, gives a scalar "how good does this look" score that ignores the prompt entirely.
 - **Prompt alignment.** Whether the image depicts what the prompt says: the similarity of image and text embeddings, a vision-language model answering questions about the image, or an object detector checking counts, colours and spatial relations.
 - **Text rendering.** Run optical character recognition on the image and compare the result to the text requested in the prompt.
-- **Human preference.** A reward model trained on pairwise human choices between images for the same prompt, exactly as in Section 3.
+- **Human preference.** A reward model trained on pairwise human choices between images for the same prompt, exactly as in Section 4.
 - **Toy objectives.** JPEG-compressed file size is cheap, unambiguous and visibly changes the images (flatter, less textured), which makes it a convenient test of whether an algorithm works.
 
 One property decides which algorithms are available. JPEG size, OCR, detectors and VLM judges are **non-differentiable** in the pixels; neural reward models such as aesthetic and preference predictors are **differentiable**, with a cheap $\nabla_{x_0} r(x_0, c)$. Policy-gradient methods need only reward values; reward backpropagation needs the gradient.
@@ -72,7 +72,7 @@ Fix a diffusion model with $T$ steps and a reward $r(x_0, c)$. The **denoising M
 - reward $r(s_k, a_k) = r(x_0, c)$ at the last step (when $t = 1$) and $0$ otherwise, with $\gamma = 1$.
 </Definition>
 
-The trajectory of this MDP is the sampling chain, its return is $r(x_0, c)$, and $J(\theta)$ above is its expected return. The policy is Gaussian with explicit log-probability, so the machinery of Section 2 applies without change. Unlike the token MDP of Section 3, actions are continuous and high-dimensional (a whole latent image) and the horizon is fixed by the sampler. The reward is extremely sparse: nothing says which of the fifty denoising steps made the cubes red.
+The trajectory of this MDP is the sampling chain, its return is $r(x_0, c)$, and $J(\theta)$ above is its expected return. The policy is Gaussian with explicit log-probability, so the machinery of Section 3 applies without change. Unlike the token MDP of Section 4, actions are continuous and high-dimensional (a whole latent image) and the horizon is fixed by the sampler. The reward is extremely sparse: nothing says which of the fifty denoising steps made the cubes red.
 
 ## Policy gradients over the sampling chain
 
@@ -96,7 +96,7 @@ Each per-step score is explicit:
 $$
 \nabla_\theta \log p_\theta(x_{t-1} \mid x_t, c) = \frac{1}{\sigma_t^2}\, \big( \nabla_\theta \mu_\theta(x_t, t, c) \big)^{\!\top} \big( x_{t-1} - \mu_\theta(x_t, t, c) \big) .
 $$
-It pushes the predicted mean towards the drawn sample in proportion to the final reward. As in Section 2, $r$ is replaced by an advantage $\hat A = r - b(c)$ with a baseline; DDPO normalizes rewards using per-prompt statistics.
+It pushes the predicted mean towards the drawn sample in proportion to the final reward. As in Section 3, $r$ is replaced by an advantage $\hat A = r - b(c)$ with a baseline; DDPO normalizes rewards using per-prompt statistics.
 
 This plain estimator needs fresh samples for every gradient step. The importance-sampled variant reuses each batch for several updates, as PPO does. With chains sampled from $p_{\theta_{\mathrm{old}}}$ and the per-step ratio
 $$
@@ -112,7 +112,7 @@ Black et al. demonstrated DDPO on compressibility, incompressibility, an aesthet
 
 ### DPOK and the KL penalty over the chain
 
-Fan et al. (2023) proposed **DPOK**, which adds the KL regularization of Section 3:
+Fan et al. (2023) proposed **DPOK**, which adds the KL regularization of Section 4:
 $$
 \max_\theta\; \mathbb{E}_c \Big[ \mathbb{E}_{x_0 \sim p_\theta(\cdot \mid c)}\, r(x_0, c) - \beta\, \mathrm{KL}\big( p_\theta(x_0 \mid c) \,\|\, p_{\mathrm{ref}}(x_0 \mid c) \big) \Big].
 $$
@@ -131,7 +131,7 @@ For Gaussian kernels with a shared variance the per-step term is closed form,
 $$
 \mathrm{KL}\big( p_\theta(x_{t-1} \mid x_t, c) \,\|\, p_{\mathrm{ref}}(x_{t-1} \mid x_t, c) \big) = \frac{\| \mu_\theta(x_t, t, c) - \mu_{\mathrm{ref}}(x_t, t, c) \|^2}{2 \sigma_t^2},
 $$
-so the regularizer is a cheap distance between the two networks' predictions along chains sampled from the current model. It is the diffusion analogue of the per-token KL penalty of Section 3. DPOK used the ImageReward preference model as its reward and found the KL term important for preserving quality and diversity.
+so the regularizer is a cheap distance between the two networks' predictions along chains sampled from the current model. It is the diffusion analogue of the per-token KL penalty of Section 4. DPOK used the ImageReward preference model as its reward and found the KL term important for preserving quality and diversity.
 
 ## Backpropagating the reward through the sampler
 
@@ -151,7 +151,7 @@ Truncation makes the gradient biased: the early steps, which decide composition 
 
 ## Diffusion-DPO
 
-Direct preference optimization (Section 3) skips the reward model and trains directly on pairs $x_0^w \succ x_0^l$ for a prompt $c$. For diffusion the needed $\log p_\theta(x_0 \mid c)$ is intractable, so Wallace et al. (2023) work at the level of whole chains and then make a sequence of approximations. We sketch the argument, writing each approximation explicitly.
+Direct preference optimization (Section 4) skips the reward model and trains directly on pairs $x_0^w \succ x_0^l$ for a prompt $c$. For diffusion the needed $\log p_\theta(x_0 \mid c)$ is intractable, so Wallace et al. (2023) work at the level of whole chains and then make a sequence of approximations. We sketch the argument, writing each approximation explicitly.
 
 **Step 1: move to the chain.** Define the objective over chains $x_{0:T}$ instead of images, with a chain reward $R(c, x_{0:T})$ whose expectation over chains ending in $x_0$ is $r(x_0, c)$, and the KL penalty on the joint distribution:
 $$
@@ -159,7 +159,7 @@ $$
 $$
 *Approximation 1:* the joint KL upper-bounds the image KL (the result above), so this is a stronger regularizer than the one in the original problem.
 
-**Step 2: DPO on chains.** Exactly as in Section 3, the optimum is $p^*(x_{0:T} \mid c) \propto p_{\mathrm{ref}}(x_{0:T} \mid c) \exp(R(c, x_{0:T}) / \beta)$, so the reward can be written in terms of the chain log-ratio, and the Bradley–Terry likelihood of a preference pair becomes a function of $\beta \log \frac{p_\theta(x_{0:T} \mid c)}{p_{\mathrm{ref}}(x_{0:T} \mid c)}$ evaluated on chains ending in $x_0^w$ and $x_0^l$. Since the data contain only final images, the log-ratios are averaged over $x_{1:T} \sim p_\theta(x_{1:T} \mid x_0, c)$.
+**Step 2: DPO on chains.** Exactly as in Section 4, the optimum is $p^*(x_{0:T} \mid c) \propto p_{\mathrm{ref}}(x_{0:T} \mid c) \exp(R(c, x_{0:T}) / \beta)$, so the reward can be written in terms of the chain log-ratio, and the Bradley–Terry likelihood of a preference pair becomes a function of $\beta \log \frac{p_\theta(x_{0:T} \mid c)}{p_{\mathrm{ref}}(x_{0:T} \mid c)}$ evaluated on chains ending in $x_0^w$ and $x_0^l$. Since the data contain only final images, the log-ratios are averaged over $x_{1:T} \sim p_\theta(x_{1:T} \mid x_0, c)$.
 
 **Step 3: Jensen.** The expectation sits inside $\log \sigma$. Because $-\log \sigma$ is convex, moving the expectation outside gives an upper bound on the loss. *Approximation 2:* minimize this bound.
 
@@ -184,11 +184,11 @@ and $\Delta_\theta^l$ defined the same way for the losing image.
 
 The loss decreases when the trained model improves on the reference more for the winner than for the loser; the loser term is what pushes the model away from dispreferred outputs. In practice $w_t$ is often taken constant and absorbed into $\beta$.
 
-The loss is an upper bound on a bound on the DPO loss for a stronger regularizer, evaluated on forward-process chains the model never samples. It is fully offline and cheap, needing one denoising pass per image; Wallace et al. trained Stable Diffusion XL on the Pick-a-Pic dataset of human pairwise preferences. Like DPO in Section 3, it cannot explore beyond the dataset.
+The loss is an upper bound on a bound on the DPO loss for a stronger regularizer, evaluated on forward-process chains the model never samples. It is fully offline and cheap, needing one denoising pass per image; Wallace et al. trained Stable Diffusion XL on the Pick-a-Pic dataset of human pairwise preferences. Like DPO in Section 4, it cannot explore beyond the dataset.
 
 ## Flow-GRPO: policy gradients for flow models
 
-Flow-matching models sample by integrating an ODE, so there is no per-step distribution and no likelihood ratio. Liu et al. (2025) made GRPO (Section 4) applicable to them with **Flow-GRPO**, whose central step is to replace the ODE by a stochastic differential equation with the same marginals.
+Flow-matching models sample by integrating an ODE, so there is no per-step distribution and no likelihood ratio. Liu et al. (2025) made GRPO (Section 5) applicable to them with **Flow-GRPO**, whose central step is to replace the ODE by a stochastic differential equation with the same marginals.
 
 ### From ODE to SDE
 
@@ -225,7 +225,7 @@ This is a Gaussian policy $\pi_\theta(x_{t - \Delta t} \mid x_t, c)$ with mean g
 
 ### Group-relative advantages
 
-Flow-GRPO then runs GRPO as in Section 4. For each prompt $c$, sample $K$ images $x_0^{(1)}, \dots, x_0^{(K)}$ with the SDE sampler, score them, and form
+Flow-GRPO then runs GRPO as in Section 5. For each prompt $c$, sample $K$ images $x_0^{(1)}, \dots, x_0^{(K)}$ with the SDE sampler, score them, and form
 $$
 \hat A^{(i)} = \frac{r(x_0^{(i)}, c) - \operatorname{mean}_j\, r(x_0^{(j)}, c)}{\operatorname{std}_j\, r(x_0^{(j)}, c)} .
 $$
@@ -253,14 +253,14 @@ Non-differentiable rewards (OCR, detectors, vision-language judges, compressibil
 - **CLIP score**: image–prompt embedding similarity. Cheap and differentiable, but weak on counting, spatial relations and text.
 - **Aesthetic predictors**: a small head on frozen image embeddings regressed onto human ratings. Prompt-agnostic by construction.
 - **Human-preference models**: PickScore (trained on the Pick-a-Pic preferences), HPS (Human Preference Score) and ImageReward are image–text scorers fine-tuned from pairwise human judgements. They inherit the biases of their annotators and prompts.
-- **Vision-language models as judges**: ask a VLM whether the image matches the prompt, or to answer generated questions about it. Flexible but slow, non-differentiable, and prone to the hallucinations of Section 6.
-- **Programmatic checks**: OCR edit distance for text rendering, object detectors for counts, colours and positions. The analogue of the verifiable rewards of Section 4.
+- **Vision-language models as judges**: ask a VLM whether the image matches the prompt, or to answer generated questions about it. Flexible but slow, non-differentiable, and prone to the hallucinations of Section 7.
+- **Programmatic checks**: OCR edit distance for text rendering, object detectors for counts, colours and positions. The analogue of the verifiable rewards of Section 5.
 
 ### Reward hacking and regularization
 
 Generators find the failure modes of their reward models with impressive efficiency. Recurring symptoms are **oversaturation** and excessive contrast and detail, which many preference models over-reward; **prompt-agnostic collapse**, where an aesthetic reward drives every prompt towards the same high-scoring style or subject; and **diversity loss**, where samples for a given prompt become near-duplicates because the reward has a single mode.
 
-The defences parallel Section 3: a KL penalty to the reference (per-step as in DPOK, or per-step Gaussian KL in Flow-GRPO), early stopping on a held-out reward, combining several rewards so that no single one can be exploited, interpolating fine-tuned and reference weights, and evaluating with a reward model different from the one optimized. None is fully satisfactory; how to regularize against diversity loss, rather than merely detect it, is an open question.
+The defences parallel Section 4: a KL penalty to the reference (per-step as in DPOK, or per-step Gaussian KL in Flow-GRPO), early stopping on a held-out reward, combining several rewards so that no single one can be exploited, interpolating fine-tuned and reference weights, and evaluating with a reward model different from the one optimized. None is fully satisfactory; how to regularize against diversity loss, rather than merely detect it, is an open question.
 
 ## Video generation
 
@@ -272,7 +272,7 @@ Video models are diffusion or flow models over a space-time latent, so every met
 
 ## Autoregressive image models
 
-Autoregressive models tokenize images with a discrete tokenizer and generate tokens one at a time. For these models the policy is literally the token policy of Section 3: $\log \pi_\theta(y \mid x)$ is a sum of token log-probabilities, and PPO, GRPO and DPO apply without any of the reformulations of this section.
+Autoregressive models tokenize images with a discrete tokenizer and generate tokens one at a time. For these models the policy is literally the token policy of Section 4: $\log \pi_\theta(y \mid x)$ is a sum of token log-probabilities, and PPO, GRPO and DPO apply without any of the reformulations of this section.
 
 ## Open problems
 
@@ -281,6 +281,6 @@ Autoregressive models tokenize images with a discrete tokenizer and generate tok
 - **Reward models.** Robust, hard-to-hack rewards for composition, text, motion and physical plausibility.
 - **Few-step and distilled generators.** Whether to apply RL before or after distillation to few-step samplers, and how, is unsettled.
 
-Sections 3–7 have applied one recipe. Choose what the policy is: a distribution over tokens for language models and autoregressive image models, over action chunks for robot policies, over text grounded in an image for vision-language models, and over denoising steps for diffusion and flow models. Choose a reward: a preference model, a verifier, task success, or a learned judge. Optimize expected reward with a KL penalty to a reference policy, using policy gradients when only reward values are available, pathwise gradients when the reward is differentiable, and direct preference objectives when only comparisons are. What changes from modality to modality is how the policy's log-probability is exposed (exactly for tokens, through a chain bound for diffusion, after an ODE-to-SDE conversion for flows), how expensive a rollout is, and how easily the reward can be gamed. The recipe itself is the same.
+Sections 4–8 have applied one recipe. Choose what the policy is: a distribution over tokens for language models and autoregressive image models, over action chunks for robot policies, over text grounded in an image for vision-language models, and over denoising steps for diffusion and flow models. Choose a reward: a preference model, a verifier, task success, or a learned judge. Optimize expected reward with a KL penalty to a reference policy, using policy gradients when only reward values are available, pathwise gradients when the reward is differentiable, and direct preference objectives when only comparisons are. What changes from modality to modality is how the policy's log-probability is exposed (exactly for tokens, through a chain bound for diffusion, after an ODE-to-SDE conversion for flows), how expensive a rollout is, and how easily the reward can be gamed. The recipe itself is the same.
 
 Further reading: J. Ho et al., *Denoising Diffusion Probabilistic Models* (NeurIPS 2020); Y. Lipman et al., *Flow Matching for Generative Modeling* (ICLR 2023); K. Black et al., *Training Diffusion Models with Reinforcement Learning* (2023), for DDPO and the denoising MDP; Y. Fan et al., *DPOK: Reinforcement Learning for Fine-tuning Text-to-Image Diffusion Models* (NeurIPS 2023); K. Clark et al., *Directly Fine-Tuning Diffusion Models on Differentiable Rewards* (2023), for DRaFT; B. Wallace et al., *Diffusion Model Alignment Using Direct Preference Optimization* (2023); J. Liu et al., *Flow-GRPO: Training Flow Matching Models via Online RL* (2025).

@@ -23,7 +23,7 @@ different subject).
 - Section order: motivation → definitions/formulation → main results and
   methods → research directions/extensions → further reading. The site calls
   each page a "Section".
-- Notation is shared across sections (see Section 1 and 2): MDP
+- Notation is shared across sections (see Sections 1–3): MDP
   $(\mathcal{S}, \mathcal{A}, P, r, \gamma, \mu)$, policy $\pi_\theta$,
   return $G_t$, $V^\pi$, $Q^\pi$, $A^\pi$, objective $J(\theta)$, importance
   ratio $\rho_t(\theta)$, clip range $\epsilon$, KL coefficient $\beta$,

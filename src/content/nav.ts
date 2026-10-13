@@ -23,6 +23,12 @@ export const parts: Part[] = [
           "Learning from reward rather than from labels: Markov decision processes, returns and value functions, the Bellman equations, and the classical families of algorithms built on them.",
       },
       {
+        slug: "td-learning",
+        title: "Temporal-Difference Learning and Q-Learning",
+        summary:
+          "Learning values from sampled transitions: TD(0) as stochastic approximation, n-step returns and TD(λ), SARSA and Q-learning with their convergence, maximization bias, function approximation and DQN, and where value learning reappears in large models.",
+      },
+      {
         slug: "policy-gradients",
         title: "Policy Gradients and PPO",
         summary:

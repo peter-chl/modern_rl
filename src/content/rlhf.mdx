@@ -1,6 +1,6 @@
 A pretrained language model is trained to do one thing: predict the next token of text drawn from a very large corpus. That objective produces remarkable capabilities, but it is not the objective anyone deploying an assistant actually cares about. We want responses that are **helpful** (they answer the question that was asked, at the right level of detail), **harmless** (they decline to help with things that cause damage) and honest. None of these properties is written down as a loss function, and the corpus contains plenty of text that is unhelpful, wrong or harmful, which a perfect next-token predictor will reproduce with the right frequency.
 
-Supervised fine-tuning on curated demonstrations narrows the gap, but it runs into a basic asymmetry: for many tasks, **judging is easier than demonstrating**. A person who could not write a good summary of a long article in a minute can still say which of two summaries is better. A reader can tell that one explanation is clearer than another without being able to produce the clearer one. Comparisons are cheap, consistent enough to learn from, and they can rank outputs that are better than anything the labeller would have written. This section shows how to turn such comparisons into a training signal for a language model, first with the full reinforcement learning machinery of Section 2, and then with direct methods that never build an explicit reward.
+Supervised fine-tuning on curated demonstrations narrows the gap, but it runs into a basic asymmetry: for many tasks, **judging is easier than demonstrating**. A person who could not write a good summary of a long article in a minute can still say which of two summaries is better. A reader can tell that one explanation is clearer than another without being able to produce the clearer one. Comparisons are cheap, consistent enough to learn from, and they can rank outputs that are better than anything the labeller would have written. This section shows how to turn such comparisons into a training signal for a language model, first with the full reinforcement learning machinery of Section 3, and then with direct methods that never build an explicit reward.
 
 ## Why likelihood is not the objective
 
@@ -14,7 +14,7 @@ The third point is the familiar distribution-shift argument for reinforcement le
 
 ## The language model as a policy
 
-To apply the methods of Section 2 we must say what the states, actions and rewards are.
+To apply the methods of Section 3 we must say what the states, actions and rewards are.
 
 <Definition name="Token-level MDP for a language model">
 Fix a vocabulary $\mathcal{V}$ containing an end-of-sequence token. The **token-level MDP** has
@@ -37,7 +37,7 @@ Because transitions are deterministic and the reward depends only on the finishe
 $$
 \nabla_\theta J(\theta) = \mathbb{E}\Big[ r(x, y) \sum_{t=1}^{T} \nabla_\theta \log \pi_\theta(y_t \mid s_t) \Big].
 $$
-They differ in how credit is assigned. The token-level view invites a per-token value function and per-token advantages, as in PPO below. The bandit view uses one baseline per prompt and one advantage per response, which is the route taken by the critic-free methods of Section 4.
+They differ in how credit is assigned. The token-level view invites a per-token value function and per-token advantages, as in PPO below. The bandit view uses one baseline per prompt and one advantage per response, which is the route taken by the critic-free methods of Section 5.
 </Remark>
 
 ## The three-stage pipeline
@@ -90,11 +90,11 @@ So a reward model learned from comparisons is identified only up to a per-prompt
 
 ### The KL-regularized objective
 
-Optimizing $r_\phi$ without restraint is a bad idea: the reward model was trained on responses from $\pi_{\mathrm{SFT}}$, and a policy that moves far from that distribution will find responses where $r_\phi$ is wrong. The standard objective therefore adds the KL penalty from Section 2:
+Optimizing $r_\phi$ without restraint is a bad idea: the reward model was trained on responses from $\pi_{\mathrm{SFT}}$, and a policy that moves far from that distribution will find responses where $r_\phi$ is wrong. The standard objective therefore adds the KL penalty from Section 3:
 $$
 J(\theta) = \mathbb{E}_{x \sim \mu}\Big[ \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)}\big[r_\phi(x, y)\big] - \beta\, \mathrm{KL}\big(\pi_\theta(\cdot \mid x) \,\|\, \pi_{\mathrm{ref}}(\cdot \mid x)\big) \Big].
 $$
-Recall from Section 2 that for each prompt, over all distributions on responses, this is maximized by
+Recall from Section 3 that for each prompt, over all distributions on responses, this is maximized by
 $$
 \pi^*(y \mid x) = \frac{1}{Z(x)}\, \pi_{\mathrm{ref}}(y \mid x) \exp\!\Big(\frac{r_\phi(x, y)}{\beta}\Big), \qquad Z(x) = \sum_{y} \pi_{\mathrm{ref}}(y \mid x) \exp\!\Big(\frac{r_\phi(x, y)}{\beta}\Big).
 $$
@@ -114,7 +114,7 @@ Every token pays a KL cost, and the reward model's score arrives at the final to
 
 ### Value head and advantages
 
-With per-token rewards in hand, PPO proceeds as in Section 2. A **value model** $V_\psi(s_t)$, usually a copy of a language model with a scalar head and commonly initialized from the reward model, estimates the expected remaining return from each prefix. Advantages come from generalized advantage estimation:
+With per-token rewards in hand, PPO proceeds as in Section 3. A **value model** $V_\psi(s_t)$, usually a copy of a language model with a scalar head and commonly initialized from the reward model, estimates the expected remaining return from each prefix. Advantages come from generalized advantage estimation:
 $$
 \delta_t = r_t + \gamma V_\psi(s_{t+1}) - V_\psi(s_t), \qquad \hat A_t = \sum_{k \ge 0} (\gamma \lambda)^k \delta_{t+k},
 $$
@@ -141,7 +141,7 @@ repeat:
 ```
 
 <Remark name="Four models in memory">
-A PPO-RLHF step involves four networks of comparable size: the **policy** (trained), the **value model** (trained), the **reference policy** (frozen, for the KL term) and the **reward model** (frozen, for scoring). Generation is also slow, because sampling is sequential in the response length. This cost is a large part of the motivation for the methods that follow: DPO removes the reward and value models from the training loop, and the critic-free methods of Section 4 remove the value model.
+A PPO-RLHF step involves four networks of comparable size: the **policy** (trained), the **value model** (trained), the **reference policy** (frozen, for the KL term) and the **reward model** (frozen, for scoring). Generation is also slow, because sampling is sequential in the response length. This cost is a large part of the motivation for the methods that follow: DPO removes the reward and value models from the training loop, and the critic-free methods of Section 5 remove the value model.
 </Remark>
 
 InstructGPT also mixed a pretraining loss into the RL stage to limit regressions on standard NLP tasks.
@@ -257,6 +257,6 @@ The best-known instance is **Constitutional AI** (Bai et al., 2022). A short lis
 - **Evaluation.** The quantity being optimized — human preference — is also the quantity that is hard to measure. Automatic evaluation with a language-model judge is cheap but has its own biases (towards length, position and its own style), and optimizing against a judge invites the same Goodhart problem one level up.
 - **Beyond outcome preferences.** Comparisons of whole responses give sparse credit for long, multi-step answers. Where correctness can be checked automatically, a verifier can replace the learned reward entirely.
 
-That last direction is the subject of Section 4: when the reward is a checker rather than a learned model, overoptimization looks very different, and the RL machinery can be simplified further.
+That last direction is the subject of Section 5: when the reward is a checker rather than a learned model, overoptimization looks very different, and the RL machinery can be simplified further.
 
 Further reading: P. Christiano et al., *Deep Reinforcement Learning from Human Preferences* (NeurIPS 2017), the origin of the pipeline; N. Stiennon et al., *Learning to Summarize from Human Feedback* (NeurIPS 2020); L. Ouyang et al., *Training Language Models to Follow Instructions with Human Feedback* (NeurIPS 2022), the InstructGPT paper; L. Gao et al., *Scaling Laws for Reward Model Overoptimization* (ICML 2023); R. Rafailov et al., *Direct Preference Optimization: Your Language Model is Secretly a Reward Model* (NeurIPS 2023); Y. Bai et al., *Constitutional AI: Harmlessness from AI Feedback* (2022).

@@ -64,7 +64,7 @@ Running a policy in an MDP generates a **trajectory** $\tau = (s_0, a_0, r_0, s_
 $$
 p_\pi(s_0, a_0, s_1, a_1, \dots, s_T) = \mu(s_0) \prod_{t=0}^{T-1} \pi(a_t \mid s_t)\, P(s_{t+1} \mid s_t, a_t).
 $$
-Only the factors $\pi(a_t \mid s_t)$ depend on the policy. This trivial-looking observation is the root of the policy gradient theorem in Section 2: the gradient of a trajectory's log-probability with respect to $\theta$ involves only the policy, never the unknown dynamics $P$.
+Only the factors $\pi(a_t \mid s_t)$ depend on the policy. This trivial-looking observation is the root of the policy gradient theorem in Section 3: the gradient of a trajectory's log-probability with respect to $\theta$ involves only the policy, never the unknown dynamics $P$.
 
 <Definition name="Return">
 The **return** from time $t$ is the discounted sum of future rewards,
@@ -106,7 +106,7 @@ $V^\pi(s)$ is how good it is to be in $s$ under $\pi$; $Q^\pi(s, a)$ is how good
 $$
 V^\pi(s) = \sum_a \pi(a \mid s)\, Q^\pi(s, a), \qquad \text{hence} \qquad \mathbb{E}_{a \sim \pi(\cdot \mid s)}\big[A^\pi(s, a)\big] = 0,
 $$
-and $J(\pi) = \mathbb{E}_{s_0 \sim \mu}[V^\pi(s_0)]$. The advantage is centred: positive for actions better than the policy's average, negative for worse ones. That is why it, and not the raw return, is the quantity policy-gradient methods try to estimate (Section 2).
+and $J(\pi) = \mathbb{E}_{s_0 \sim \mu}[V^\pi(s_0)]$. The advantage is centred: positive for actions better than the policy's average, negative for worse ones. That is why it, and not the raw return, is the quantity policy-gradient methods try to estimate (Section 3).
 
 ### The Bellman expectation equations
 
@@ -191,7 +191,7 @@ This gives three algorithms.
 - **Value iteration**: iterate $V_{k+1} = T^\ast V_k$. The iterates converge geometrically to $V^\ast$, and the greedy policy with respect to $V_k$ is optimal once $k$ is large enough.
 - **Policy iteration**: alternate between evaluating the current policy, $V^{\pi_k}$, and improving it greedily, $\pi_{k+1}(s) \in \arg\max_a Q^{\pi_k}(s, a)$.
 
-Policy iteration rests on the following fact, whose proof is worth seeing because it is the template for the policy-improvement bounds behind TRPO and PPO in Section 2.
+Policy iteration rests on the following fact, whose proof is worth seeing because it is the template for the policy-improvement bounds behind TRPO and PPO in Section 3.
 
 <Result name="Policy improvement">
 Let $\pi'$ be greedy with respect to $Q^\pi$, so $Q^\pi(s, \pi'(s)) = \max_a Q^\pi(s, a)$ for every $s$. Then $V^{\pi'}(s) \ge V^\pi(s)$ for every $s$. If equality holds everywhere, $\pi$ is optimal.
@@ -230,7 +230,7 @@ The two methods sit at opposite ends of a bias–variance trade-off. The Monte C
 $$
 G_t^{(n)} = \sum_{k=0}^{n-1} \gamma^k r_{t+k} + \gamma^n V(s_{t+n}),
 $$
-and exponentially weighted averages of these (TD($\lambda$)). The same interpolation reappears in Section 2 as generalized advantage estimation.
+and exponentially weighted averages of these (TD($\lambda$)). The same interpolation reappears in Section 3 as generalized advantage estimation.
 
 One identity connects TD errors to advantages. If $V = V^\pi$ exactly, then
 $$
@@ -258,7 +258,7 @@ The target uses the best next action, whatever the agent actually does next. In 
 
 The difference between SARSA and Q-learning illustrates a distinction that runs through all of RL. The policy that generates the data is the **behaviour policy**; the policy whose value is being learned is the **target policy**. A method is **on-policy** if the two coincide and **off-policy** if they may differ.
 
-SARSA is on-policy: it learns the value of the exploring policy it follows. Q-learning is off-policy: it learns the value of the greedy policy while following any sufficiently exploratory behaviour. Off-policy learning is more data-efficient — old data, demonstrations and logs can all be reused — at the cost of a mismatch between the training distribution and the policy being evaluated. Correcting for it in policy-based methods requires reweighting by **importance ratios** $\pi(a \mid s)/\pi_{\mathrm{behaviour}}(a \mid s)$; the ratio $\rho_t(\theta)$ in PPO (Section 2) is an instance, for a behaviour policy that is the previous iterate $\pi_{\theta_{\mathrm{old}}}$.
+SARSA is on-policy: it learns the value of the exploring policy it follows. Q-learning is off-policy: it learns the value of the greedy policy while following any sufficiently exploratory behaviour. Off-policy learning is more data-efficient — old data, demonstrations and logs can all be reused — at the cost of a mismatch between the training distribution and the policy being evaluated. Correcting for it in policy-based methods requires reweighting by **importance ratios** $\pi(a \mid s)/\pi_{\mathrm{behaviour}}(a \mid s)$; the ratio $\rho_t(\theta)$ in PPO (Section 3) is an instance, for a behaviour policy that is the previous iterate $\pi_{\theta_{\mathrm{old}}}$.
 
 ## Function approximation and the deadly triad
 
@@ -288,7 +288,7 @@ is a regression onto a target that holds still for many updates. Much subsequent
 
 ## Three families of algorithms
 
-Classical RL algorithms fall into three broad families, according to what they learn and how they turn it into behaviour. **Value-based methods** learn $Q^\ast$ and act greedily with respect to it (Q-learning, DQN). **Policy-based methods** parametrize $\pi_\theta$ directly and ascend the gradient of $J(\theta)$, usually with a learned value function as a **critic**, giving **actor–critic** methods such as PPO (Section 2). **Model-based methods** learn or are given $P$ and $r$ and use them to plan or to generate simulated experience, as in Dyna-style training or MuZero's search.
+Classical RL algorithms fall into three broad families, according to what they learn and how they turn it into behaviour. **Value-based methods** learn $Q^\ast$ and act greedily with respect to it (Q-learning, DQN). **Policy-based methods** parametrize $\pi_\theta$ directly and ascend the gradient of $J(\theta)$, usually with a learned value function as a **critic**, giving **actor–critic** methods such as PPO (Section 3). **Model-based methods** learn or are given $P$ and $r$ and use them to plan or to generate simulated experience, as in Dyna-style training or MuZero's search.
 
 | | Value-based | Policy-based | Model-based |
 |---|---|---|---|
@@ -311,8 +311,8 @@ The pieces of the classical setup map onto the modern one as follows.
 - **The episode is a generated object**: a token sequence for a language model, a sequence of action chunks for a robot, or a chain of denoising steps $x_T \to x_{T-1} \to \cdots \to x_0$ for an image or video model.
 - **The reward is a judge**: a reward model $r_\phi$ trained on human comparisons, a program that checks a final answer or runs unit tests, a success detector on a robot, or a learned aesthetic or alignment score for images. It typically arrives once, at the end of the episode.
 
-Section 2 develops policy gradients and PPO. Section 3 applies them to language models with a reward learned from human preferences, and covers methods such as DPO that skip the explicit RL loop. Section 4 replaces the learned reward with a verifier and studies critic-free, group-based methods. Sections 5 and 6 turn to robot policies and vision-language models, and Section 7 treats the denoising chain of a diffusion or flow model as an MDP. Throughout, how much RL adds beyond the pretrained model, and why, is an active research question, and we try to separate settled claims from open ones.
+Section 3 develops policy gradients and PPO. Section 4 applies them to language models with a reward learned from human preferences, and covers methods such as DPO that skip the explicit RL loop. Section 5 replaces the learned reward with a verifier and studies critic-free, group-based methods. Sections 6 and 7 turn to robot policies and vision-language models, and Section 8 treats the denoising chain of a diffusion or flow model as an MDP. Throughout, how much RL adds beyond the pretrained model, and why, is an active research question, and we try to separate settled claims from open ones.
 
-Section 2 starts from the observation made earlier about trajectory probabilities: the dynamics drop out of the gradient of $\log p_\pi(\tau)$, so one can improve a policy without ever modelling its environment.
+Section 3 starts from the observation made earlier about trajectory probabilities: the dynamics drop out of the gradient of $\log p_\pi(\tau)$, so one can improve a policy without ever modelling its environment.
 
 Further reading: R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, 2nd ed. (MIT Press, 2018) — the standard text, and the source of the deadly-triad terminology; C. Szepesvári, *Algorithms for Reinforcement Learning* (2010), a short and rigorous account of the classical algorithms; D. P. Bertsekas, *Dynamic Programming and Optimal Control*, for the dynamic-programming and contraction theory; C. J. C. H. Watkins and P. Dayan, "Q-learning", *Machine Learning* (1992); V. Mnih et al., "Human-level control through deep reinforcement learning", *Nature* (2015).
