@@ -270,6 +270,36 @@ Video models are diffusion or flow models over a space-time latent, so every met
 - **Rewards.** Per-frame image rewards miss what makes video good or bad: temporal consistency (identities and objects that persist), plausible motion, and physical coherence. Video reward models are less mature than image ones, and a model optimized for per-frame aesthetics can learn to reduce motion, since a static video scores well frame by frame.
 - **Long horizons.** Long videos are often generated in chunks, adding a second sequential structure on top of denoising; credit assignment across chunks is largely unsolved.
 
+### Geometry rewards in latent space: VGGRPO
+
+World consistency is a reward that per-frame scores cannot express: a camera should move smoothly, and the same scene seen from two viewpoints should have the same 3D structure. An et al. (2026) target exactly this with **VGGRPO** (Visual Geometry GRPO), which runs Flow-GRPO on a pretrained text-to-video flow model with rewards computed by a geometry model. Their starting point is a cost problem. A **geometry foundation model** $\Phi$ maps RGB frames to per-frame camera poses $C_i$, depth maps $D_i$ and point maps $P_i$ in a shared frame (and, for models built for dynamic scenes, scene flow $F_i$). Using it as a reward on a latent video model means decoding every one of the $K$ rollouts per prompt through the VAE before scoring, which dominates the cost of a group update and, the authors argue, makes the reward sensitive to decoding noise.
+
+The fix is a **latent geometry model** built by model stitching. Write the geometry model as a stack of $L$ transformer layers, $\Phi = \Phi_{\ell+1:L} \circ \Phi_{1:\ell}$, and let $\mathcal{E}$ be the video VAE encoder. Replace the first $\hat\ell$ layers by a small 3D-convolutional connector $S_\psi$ that reads latents directly, choosing the cut and the connector together by feature matching on a calibration set of videos $x^{(1)}, \dots, x^{(M)}$:
+$$
+\hat\ell, \psi = \arg\min_{\ell, \psi} \frac{1}{M} \sum_{m=1}^{M} \big\| S_\psi(\mathcal{E}(x^{(m)})) - \Phi_{1:\ell}(x^{(m)}) \big\|_2^2 ,
+\qquad \hat\Phi_\psi = \Phi_{\hat\ell+1:L} \circ S_\psi .
+$$
+The connector and the remaining layers are then fine-tuned so that the outputs of $\hat\Phi_\psi(\mathcal{E}(x))$ match those of $\Phi(x)$, with a weighted $\ell_1$ loss over the geometry outputs. After this, geometry is read off a generated latent $z_0$ as $\hat\Phi_\psi(z_0)$, with no decoding.
+
+Two rewards are defined on that geometry.
+
+- **Camera motion smoothness.** From the predicted camera centres $c_i$, form velocities $v_i = c_{i+1} - c_i$ and accelerations $a_i = v_i - v_{i-1}$, and measure the scale-normalized acceleration
+$$
+e_{\mathrm{trans}}(z_0) = \frac{1}{N - 2} \sum_{i=2}^{N-1} \frac{\|a_i\|_2}{\|v_i\|_2 + \|v_{i-1}\|_2}
+$$
+over the $N$ frames. A rotational error $e_{\mathrm{rot}}$ is defined the same way from angular velocities $\omega_i = \log_{SO(3)}(R_i^\top R_{i+1})$. Both are near zero for steady motion, and the reward $r_{\mathrm{motion}} = \tfrac12 \big( (1 + e_{\mathrm{trans}})^{-1} + (1 + e_{\mathrm{rot}})^{-1} \big)$ lies in $(0, 1]$.
+- **Geometry reprojection consistency.** Aggregate the predicted point maps into one scene point cloud (for dynamic scenes, keeping only points the predicted scene flow marks as static), project it into each view $i$ with the predicted camera to get a rendered depth $\hat D_i$, and compare with the predicted depth: $e^{(i)}_{\mathrm{geo}}$ is the mean of $|\hat D_i - D_i|$ over the validly projected pixels. The reward $r_{\mathrm{geo}}$ is minus the average of $e^{(i)}_{\mathrm{geo}}$ over the three worst views, so that it targets local failures rather than averaging them away.
+
+The two rewards live on different scales, so they are normalized **separately** within the group before being combined:
+$$
+\hat A^{(k)} = \frac12 \left( \frac{r_{\mathrm{motion}}^{(k)} - \mu_{\mathrm{motion}}}{\sigma_{\mathrm{motion}}} + \frac{r_{\mathrm{geo}}^{(k)} - \mu_{\mathrm{geo}}}{\sigma_{\mathrm{geo}}} \right),
+$$
+where $\mu$ and $\sigma$ are the mean and standard deviation of each reward across the $K$ samples for the prompt. Normalizing a weighted sum instead would let whichever reward has the larger spread within a group decide the ranking; normalizing each first gives the two equal say in every group, whatever their units. The policy update is then the clipped Flow-GRPO surrogate of the previous subsection, with per-step ratios over denoising latents and a KL penalty to the reference.
+
+<Remark>
+VGGRPO illustrates three points that recur in RL for generators. First, the **reward model is a design object**: here it is a perception model (Section 8's territory) stitched onto the generator's latent space, and reward cost, not policy cost, is what it optimizes. Second, a reward on one property shifts others: the authors report a slightly lower dynamic-degree score after training, which they attribute to reduced camera jitter lowering the optical-flow magnitude that metric measures. Any reward that touches motion calls for checking that the video has not simply become more static. Third, because $\hat\Phi_\psi$ is differentiable, the same rewards can also be used without RL, as gradient guidance applied to latents during sampling. The authors report that this helps less than the RL fine-tuning, the same contrast between pathwise and policy-gradient uses of a reward drawn earlier in this section.
+</Remark>
+
 ## Autoregressive image models
 
 Autoregressive models tokenize images with a discrete tokenizer and generate tokens one at a time. For these models the policy is literally the token policy of Section 4: $\log \pi_\theta(y \mid x)$ is a sum of token log-probabilities, and PPO, GRPO and DPO apply without any of the reformulations of this section.
@@ -283,4 +313,4 @@ Autoregressive models tokenize images with a discrete tokenizer and generate tok
 
 Sections 4–9 have applied one recipe. Choose what the policy is: a distribution over tokens for language models and autoregressive image models, over action chunks for robot policies, over text grounded in an image for vision-language models, and over denoising steps for diffusion and flow models. Choose a reward: a preference model, a verifier, task success, or a learned judge. Optimize expected reward with a KL penalty to a reference policy, using policy gradients when only reward values are available, pathwise gradients when the reward is differentiable, and direct preference objectives when only comparisons are. What changes from modality to modality is how the policy's log-probability is exposed (exactly for tokens, through a chain bound for diffusion, after an ODE-to-SDE conversion for flows), how expensive a rollout is, and how easily the reward can be gamed. The recipe itself is the same.
 
-Further reading: J. Ho et al., *Denoising Diffusion Probabilistic Models* (NeurIPS 2020); Y. Lipman et al., *Flow Matching for Generative Modeling* (ICLR 2023); K. Black et al., *Training Diffusion Models with Reinforcement Learning* (2023), for DDPO and the denoising MDP; Y. Fan et al., *DPOK: Reinforcement Learning for Fine-tuning Text-to-Image Diffusion Models* (NeurIPS 2023); K. Clark et al., *Directly Fine-Tuning Diffusion Models on Differentiable Rewards* (2023), for DRaFT; B. Wallace et al., *Diffusion Model Alignment Using Direct Preference Optimization* (2023); J. Liu et al., *Flow-GRPO: Training Flow Matching Models via Online RL* (2025).
+Further reading: J. Ho et al., *Denoising Diffusion Probabilistic Models* (NeurIPS 2020); Y. Lipman et al., *Flow Matching for Generative Modeling* (ICLR 2023); K. Black et al., *Training Diffusion Models with Reinforcement Learning* (2023), for DDPO and the denoising MDP; Y. Fan et al., *DPOK: Reinforcement Learning for Fine-tuning Text-to-Image Diffusion Models* (NeurIPS 2023); K. Clark et al., *Directly Fine-Tuning Diffusion Models on Differentiable Rewards* (2023), for DRaFT; B. Wallace et al., *Diffusion Model Alignment Using Direct Preference Optimization* (2023); J. Liu et al., *Flow-GRPO: Training Flow Matching Models via Online RL* (2025); Z. An et al., *VGGRPO: Towards World-Consistent Video Generation with 4D Latent Reward* (arXiv 2603.26599, 2026).
