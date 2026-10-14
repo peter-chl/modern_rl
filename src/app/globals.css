@@ -103,6 +103,7 @@ body {
 
 .lecture h3 {
   counter-increment: subsection;
+  counter-reset: subsubsection;
   font-family: var(--font-sans);
   font-size: 1.1rem;
   font-weight: 600;
@@ -115,8 +116,23 @@ body {
   font-weight: 500;
 }
 
+.lecture h4 {
+  counter-increment: subsubsection;
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: 1.6em;
+}
+
+.lecture h4::before {
+  content: counter(lecture) "." counter(section) "." counter(subsection) "." counter(subsubsection) "\2002";
+  color: var(--muted);
+  font-weight: 500;
+}
+
 .lecture h2 + *,
-.lecture h3 + * {
+.lecture h3 + *,
+.lecture h4 + * {
   margin-top: 0.7em;
 }
 

@@ -338,7 +338,7 @@ usually rescaled. It is cheap, differentiable and prompt-conditioned. Its weakne
 
 ### Aesthetic predictors
 
-An **aesthetic predictor** is a small regression head on frozen image embeddings (typically CLIP's), fitted to human ratings of how good images look. The LAION aesthetic predictor is the common example and was the reward in DDPO's aesthetic-quality experiment. It ignores the prompt by construction, which makes it the textbook case of prompt-agnostic collapse: optimized hard, it drives every prompt towards the same lighting, palette and style.
+An **aesthetic predictor** is a small regression head on frozen image embeddings (typically CLIP's), fitted to human ratings of how good images look. The common example is the LAION aesthetic predictor ([code](https://github.com/christophschuhmann/improved-aesthetic-predictor)): a small network on CLIP ViT-L/14 image embeddings, regressed with a squared loss onto average human ratings from photography and AI-art rating datasets (AVA among them). It was built to filter the LAION image collection, and it was the reward in DDPO's aesthetic-quality experiment. It ignores the prompt by construction, which makes it the textbook case of prompt-agnostic collapse: optimized hard, it drives every prompt towards the same lighting, palette and style.
 
 ### Human-preference models
 
@@ -348,9 +348,25 @@ P(x_w \succ x_l \mid c) = \sigma\big( r_\phi(x_w, c) - r_\phi(x_l, c) \big)
 $$
 by maximum likelihood. The models differ in data and backbone.
 
-- **ImageReward** (Xu et al., NeurIPS 2023) was trained on expert rankings of images generated for real user prompts, and introduced together with the ReFL fine-tuning method above.
-- **PickScore** (Kirstain et al., NeurIPS 2023) comes from **Pick-a-Pic**, a dataset collected through a public web app in which users entered prompts and picked the better of two generated images. PickScore fine-tunes a CLIP model so that the scaled similarity $r_\phi(x, c) = \tau \langle E_{\mathrm{img}}(x), E_{\mathrm{txt}}(c) \rangle$ ranks the chosen image above the rejected one; with a softmax over the two images this is exactly the Bradley–Terry likelihood. The same Pick-a-Pic pairs are the training data of Diffusion-DPO, which skips the reward model altogether.
-- **HPS v2** (Human Preference Score; Wu et al., 2023) fine-tunes CLIP on a large dataset of human preference judgements, HPD v2; **HPS-v2.1** is an updated release of the scorer and is the main image reward in DanceGRPO, whose open-source version also draws its training prompts from HPD.
+#### ImageReward
+
+**ImageReward** (Xu et al., NeurIPS 2023; [paper](https://arxiv.org/abs/2304.05977), [code](https://github.com/THUDM/ImageReward)) was the first general-purpose reward model of this kind for text-to-image generation. Its training data are about 137 thousand pairwise comparisons from expert annotators, who ranked several images generated for the same real-world user prompt; each ranking is broken into pairs and fitted with the loss above. The paper introduced it together with **ReFL**, the reward-backpropagation method described earlier in this section, so ImageReward was designed from the start as an optimization target rather than only a metric. It is distributed as a small Python package and remains a standard evaluation score; the same group later released VisionReward, a finer-grained, multi-dimensional successor covering images and video.
+
+#### PickScore
+
+**PickScore** (Kirstain et al., NeurIPS 2023; [paper](https://arxiv.org/abs/2305.01569), [code](https://github.com/yuvalkirstain/PickScore)) comes from **Pick-a-Pic**, a dataset collected through a public web application in which users typed their own prompts, were shown two generated images, and picked the one they preferred (or declared a tie). Because the prompts and choices come from real users rather than paid annotators, the data reflect what people actually ask image generators for. The model is a CLIP ViT-H/14 fine-tuned on these choices, and its score is the scaled image–text similarity
+$$
+r_\phi(x, c) = \tau \left\langle \frac{E_{\mathrm{img}}(x)}{\|E_{\mathrm{img}}(x)\|},\, \frac{E_{\mathrm{txt}}(c)}{\|E_{\mathrm{txt}}(c)\|} \right\rangle ,
+$$
+with $\tau$ CLIP's learned temperature. The probability that one image beats the other is a softmax of their scores over the pair,
+$$
+P(x_1 \succ x_2 \mid c) = \frac{e^{r_\phi(x_1, c)}}{e^{r_\phi(x_1, c)} + e^{r_\phi(x_2, c)}} = \sigma\big( r_\phi(x_1, c) - r_\phi(x_2, c) \big),
+$$
+which is exactly the Bradley–Terry model; ties are trained towards probability one half. The original model was trained on Pick-a-Pic v1; a later release, Pick-a-Pic v2, has more than a million examples. Pick-a-Pic is also the preference data of Diffusion-DPO, which learns from the same pairs without a reward model, and PickScore is the human-preference reward of Flow-GRPO.
+
+#### HPS v2 and v2.1
+
+**Human Preference Score v2** (Wu et al., 2023; [paper](https://arxiv.org/abs/2306.09341), [code](https://github.com/tgxs002/HPSv2)) is built on the **Human Preference Dataset v2** (HPD v2): about 798 thousand human preference choices over some 430 thousand images, generated by many text-to-image models from a cleaned set of prompts. HPS v2 fine-tunes a CLIP ViT-H/14 on these choices in the same Bradley–Terry fashion. The release also defines a benchmark: a fixed set of evaluation prompts in four styles (animation, concept art, painting and photo), on which models are ranked by average score. **HPS v2.1** is a later checkpoint trained on higher-quality data; it is the main image reward of DanceGRPO, whose released training prompts also come from HPD. Because HPD prompts and styles are what HPS was trained on, optimizing HPS-v2.1 on HPD prompts and then reporting HPS-v2.1 on the HPS benchmark is an especially direct case of training on the evaluator.
 
 These models are prompt-conditioned and differentiable, which is why they serve as both RL rewards and backpropagation targets. They also carry the biases of their annotators, their prompt distributions and the generators that produced their training images, and they are widely observed to over-reward saturated colour, high contrast and dense detail, the first symptoms listed under reward hacking below. A preference model trained on images from older generators is also being asked to judge images from a distribution it has never seen once the policy improves, the generalization problem of Section 4 in a new modality.
 
@@ -358,23 +374,65 @@ These models are prompt-conditioned and differentiable, which is why they serve 
 
 When the prompt states something checkable, a pipeline of perception models can check it, the closest analogue of the verifiable rewards of Section 5.
 
-- **Compositional checks.** GenEval (Ghosh et al., NeurIPS 2023) turns prompts such as "two dogs to the left of a red car" into tests run by an object detector and a colour classifier applied to the detected regions: are the objects present, in the right numbers, colours and relative positions? Flow-GRPO uses these checks as its compositional reward. Other compositional benchmarks (T2I-CompBench is one) score attribute binding and relations with similar detector and VQA pipelines.
-- **Text rendering.** An OCR model reads the image and the reward is one minus the normalized edit distance to the requested string, as in Flow-GRPO.
-- **Geometry and physics.** For video, geometry foundation models can recover cameras and depth from frames and test whether they are mutually consistent; VGGRPO's motion-smoothness and reprojection rewards are of this kind.
+#### GenEval
+
+**GenEval** (Ghosh, Hajishirzi and Schmidt, NeurIPS 2023; [paper](https://arxiv.org/abs/2310.11513), [code](https://github.com/djghosh13/geneval)) evaluates compositional prompts built from templates over the 80 object classes of the COCO detection dataset, in six categories: a single object, two objects, counting, colours, relative position, and colour attribution (two objects with different specified colours). Each prompt carries machine-readable metadata, for example "two dogs" or "a red car to the left of a bench". To score an image, a Mask2Former instance-segmentation model detects objects above a confidence threshold, a CLIP ViT-L/14 model classifies the colour of each detected object among ten colour names by zero-shot classification on the object's crop, and relative positions are decided from bounding-box centres with a small margin. As a benchmark the result is **strict**: an image counts as correct only if every clause in the metadata holds.
+
+Flow-GRPO uses a softened version as its training reward, through a separate reward server ([code](https://github.com/yifan123/reward-server)). Each clause contributes a partial score: a count clause asking for $n$ objects when $\hat n$ are detected contributes $1 - |n - \hat n|/n$, a colour clause contributes the same expression with $\hat n$ the number of detected objects of the right colour, and a position clause contributes $1$ or $0$. The reward is the average over clauses, while evaluation still uses the strict pass/fail score. The softening matters for GRPO: with a binary reward, a group in which every image fails, which is common for hard counting prompts early in training, has identical rewards and therefore zero advantage, the uninformative-group problem of Section 5. Partial credit gives such groups a ranking to learn from.
+
+#### OCR reward for text rendering
+
+For prompts that ask for a string $s$ to appear in the image, Flow-GRPO reads the image with an OCR model (PaddleOCR in the released code) to get a string $\hat s$. After removing spaces and lower-casing both strings, the reward is
+$$
+r(x_0, c) = 1 - \frac{\min\big( d(\hat s, s),\, |s| \big)}{|s|},
+$$
+where $d$ is the Levenshtein edit distance and $|s|$ the length of the target, with $d$ set to $0$ whenever $s$ occurs inside $\hat s$. The reward therefore lies in $[0, 1]$, gives partial credit for near misses, and, because containment counts as a perfect match, does not penalize extra text elsewhere in the image, a gap that a policy could in principle exploit by scattering text.
+
+#### Geometry and physics
+
+For video, geometry foundation models can recover cameras and depth from frames and test whether they are mutually consistent; VGGRPO's motion-smoothness and reprojection rewards, described below, are of this kind.
 
 These rewards are only as good as the perception models inside them. A detector that misses a small object or an OCR model that misreads a stylized font produces a confident wrong reward, and a policy optimized against it can learn to satisfy the checker rather than the prompt, for instance by drawing objects in the exaggerated, isolated way the detector finds easiest.
 
 ### Vision-language models as judges
 
-A VLM can be asked directly whether an image matches its prompt. **VQAScore** (Lin et al., ECCV 2024) turns this into a number: pose the question "Does this figure show '$c$'? Please answer yes or no." and use the model's probability of the answer "Yes",
+A VLM can be asked directly whether an image matches its prompt. Its advantage over CLIP score is that the prompt is read by a language model, which can follow negation, counting and relations; its costs are speed, the absence of useful gradients in practice, and the perception failures and hallucinations of Section 7.
+
+#### VQAScore
+
+**VQAScore** (Lin et al., ECCV 2024; [paper](https://arxiv.org/abs/2404.01291), [code](https://github.com/linzhiqiu/t2v_metrics)) turns a VLM into a scalar score with a single question. The default template is
+
+> Does this figure show "$c$"? Please answer Yes or No.
+
+and the score is the probability the VLM assigns to the answer "Yes",
 $$
-r_{\mathrm{VQA}}(x_0, c) = P_{\mathrm{VLM}}(\text{Yes} \mid x_0, \text{question}(c)),
+r_{\mathrm{VQA}}(x_0, c) = P_{\mathrm{VLM}}\big( \text{Yes} \mid x_0,\ \text{question}(c) \big).
 $$
-which handles compositional prompts much better than CLIP score because the VLM reads the whole prompt with a language model. More elaborate judges decompose the prompt into questions, ask for scores or pairwise comparisons with written reasoning, or are VLMs fine-tuned specifically as reward models; UnifiedReward, which can score both understanding and generation outputs, is one such model supported in the Flow-GRPO code. The trade-offs are the reverse of CLIP score's: judges are flexible and much more accurate on composition, but slow, mostly used without gradients, and subject to the perception failures and hallucinations of Section 7. Image-quality assessment models built on VLMs (DeQA is one) are used the same way for technical quality rather than prompt alignment.
+Using the answer probability rather than a generated rating gives a continuous score without prompting the model to invent numbers. The original paper used a CLIP-FlanT5 model trained for this purpose and introduced it alongside GenAI-Bench, a benchmark of compositional prompts; the released library now computes VQAScore with many open and proprietary VLMs, for images and also for video. VQAScore is mainly used for evaluation, as a stronger replacement for CLIP score, but it is equally usable as a non-differentiable RL reward.
+
+#### UnifiedReward
+
+**UnifiedReward** (Wang et al., 2025; [project page](https://codegoat24.github.io/UnifiedReward/), [code](https://github.com/CodeGoat24/UnifiedReward)) is a VLM fine-tuned as a reward model for both multimodal understanding and generation, for images and video. It supports two modes: **pairwise ranking**, judging which of two outputs is better, and **pointwise scoring**, rating a single output. The project has since grown into a family that includes a version producing chain-of-thought reasoning before its judgement (UnifiedReward-Think) and a GRPO variant for text-to-image models trained on pairwise preferences rather than pointwise scores (Pref-GRPO). The Flow-GRPO code supports UnifiedReward as a reward. Pairwise judges fit group methods naturally, since what GRPO needs is a ranking of the $K$ samples for a prompt rather than calibrated absolute scores.
+
+Image-quality assessment models built on VLMs, such as DeQA, are used in the same way for technical quality rather than prompt alignment.
 
 ### Video reward models
 
-Video adds properties that no image scorer sees: whether motion is natural, whether objects and identities persist, whether the camera behaves plausibly. **VideoReward** (Liu et al., 2025, released in the VideoAlign repository) is a VLM-based reward model trained on human preference annotations of generated videos, which scores a video along three dimensions: **visual quality** (VQ), **motion quality** (MQ) and **text alignment** (TA). DanceGRPO trains HunyuanVideo and SkyReels-I2V on its VQ and MQ outputs, and VGGRPO uses it for evaluation. Benchmarks such as VBench define many further video dimensions (subject and background consistency, motion smoothness, dynamic degree, aesthetic and imaging quality) through separate specialist models; they are mostly used for evaluation rather than as rewards. Every motion reward invites the degenerate solution of a nearly static video, which is why papers report a dynamic-degree measure next to them.
+Video adds properties that no image scorer sees: whether motion is natural, whether objects and identities persist, whether the camera behaves plausibly.
+
+#### VideoReward (VideoAlign)
+
+**VideoReward** (Liu et al., 2025; [paper](https://arxiv.org/abs/2501.13918), [project page](https://gongyeliu.github.io/videoalign/), [code](https://github.com/KwaiVGI/VideoAlign)) is a VLM-based reward model, built on Qwen2-VL-2B-Instruct and trained on human preference annotations of generated videos. It scores a video along three dimensions, defined in its release as:
+
+- **Visual quality (VQ)**: clarity, aesthetics and the reasonableness of single frames;
+- **Motion quality (MQ)**: dynamic stability, reasonableness and naturalness of motion, and its degree;
+- **Text alignment (TA)**: relevance of the video to the prompt.
+
+Separate scores let a training run target one property; DanceGRPO trains HunyuanVideo and SkyReels-I2V on the VQ and MQ outputs, and VGGRPO uses the model's visual- and motion-quality judgements as evaluation metrics. The same paper introduced Flow-DPO, a DPO variant for flow models, and VideoGen-RewardBench, a benchmark for evaluating video reward models themselves, a reminder that reward models need their own evaluation.
+
+#### VBench
+
+**VBench** (Huang et al., CVPR 2024) is an evaluation suite rather than a single reward: it decomposes video quality into many dimensions, such as subject and background consistency, motion smoothness, dynamic degree, aesthetic and imaging quality, each measured by a separate specialist model. It is mostly used for evaluation, and its **dynamic degree** dimension is the usual check on a failure that every motion reward invites: a nearly static video scores well on smoothness and consistency.
 
 ### Training on the evaluator
 
@@ -386,7 +444,7 @@ Many of these models are also the standard benchmarks. Flow-GRPO trains on the G
 | Aesthetic predictor | visual appeal | head on CLIP features, human ratings | no | yes | prompt-agnostic collapse |
 | ImageReward, PickScore, HPS | human preference | Bradley–Terry on human pairs | yes | yes | annotator bias, saturation |
 | GenEval checks, OCR | composition, rendered text | detectors, OCR | yes | no | perception errors |
-| VLM judges (VQAScore, ...) | prompt alignment, quality | VLM probabilities or fine-tuned VLM | yes | rarely used | cost, hallucination |
+| VLM judges (VQAScore, UnifiedReward) | prompt alignment, quality | VLM probabilities or fine-tuned VLM | yes | rarely used | cost, hallucination |
 | VideoReward / VideoAlign (VQ, MQ, TA) | video quality, motion, alignment | VLM reward model, human pairs | yes | not in practice | static-video bias |
 | Geometry rewards | 3D and camera consistency | geometry foundation models | no | yes | checks consistency, not content |
 
