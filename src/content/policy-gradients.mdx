@@ -310,6 +310,80 @@ For instance $\nabla_\theta k_3 = (1 - u) \nabla_\theta \log \pi_\theta(y)$, who
 
 If $\pi_{\mathrm{ref}}$ is uniform on a finite action set, $\mathrm{KL}(\pi \,\|\, \pi_{\mathrm{ref}}) = \log |\mathcal{A}| - \mathcal{H}(\pi)$, so an entropy bonus $\alpha \mathcal{H}(\pi)$ is KL-regularization towards uniform with $\beta = \alpha$, and the optimum is the Boltzmann policy $\pi^*(a) \propto \exp(r(a)/\alpha)$. With the bonus added at every step of a sequential problem this becomes **maximum-entropy RL**, the framework behind soft actor–critic. In LLM fine-tuning, where the reference is the pretrained model, explicit entropy bonuses are less common, and the collapse of entropy during RL is itself an object of study (Section 5).
 
+## Maximum a posteriori policy optimization
+
+The optimal KL-regularized policy above is a target, not an algorithm: it is a reweighting of a reference distribution, and a neural policy cannot simply be set equal to it. Policy gradients approach the target by following $\nabla_\theta J$. A second family, built on the same closed form, alternates two easier steps: **construct** the reweighted distribution explicitly, by weighting samples, and then **fit** the parametric policy to it by maximum likelihood. The best-known member is **maximum a posteriori policy optimization**, MPO (Abdolmaleki et al., ICLR 2018), from DeepMind, an off-policy actor–critic method for continuous control. Its ideas reappear wherever a large pretrained policy must be improved with a loss it already knows how to minimize, which is why it is cited in work on RL for robot foundation models (Section 9).
+
+### RL as inference, and the two steps
+
+MPO starts from the view of RL as probabilistic inference. Introduce a binary "optimality" event $O$ whose likelihood given a state and action grows exponentially with value, $p(O = 1 \mid s, a) \propto \exp(Q(s, a)/\eta)$ for a temperature $\eta \gt 0$, and treat the policy parameters $\theta$ as having a prior $p(\theta)$. Finding a good policy is then **maximum a posteriori** estimation of $\theta$ given that optimality was observed. For any auxiliary distribution $q(a \mid s)$, Jensen's inequality gives a lower bound on the log-posterior (per state, and up to constants),
+$$
+\log p(O = 1, \theta \mid s) \ge \mathbb{E}_{a \sim q}\left[ \frac{Q(s, a)}{\eta} \right] - \mathrm{KL}\big( q(\cdot \mid s) \,\|\, \pi_\theta(\cdot \mid s) \big) + \log p(\theta),
+$$
+the same structure as the evidence lower bound of variational inference. MPO maximizes this bound by coordinate ascent, exactly as the expectation–maximization (EM) algorithm does:
+
+- **E-step:** with $\theta$ fixed, improve $q$, a non-parametric distribution over actions that puts more mass on high-$Q$ actions but stays near the current policy.
+- **M-step:** with $q$ fixed, improve $\theta$ by fitting $\pi_\theta$ to $q$, a supervised problem, with the prior $p(\theta)$ acting as a trust region around the current parameters.
+
+A critic $Q_\phi$ is learned alongside, off-policy from a replay buffer; the original paper uses the Retrace operator, a multi-step off-policy return estimator with truncated importance weights (Section 2's off-policy TD methods are the relevant background).
+
+### The E-step: a KL-constrained reweighting
+
+Rather than fixing the temperature $\eta$ by hand, MPO fixes how far $q$ may move. With $\pi_{\mathrm{old}}$ the current policy and $\mu$ the distribution of states in the replay buffer, the E-step solves
+$$
+\max_q \; \mathbb{E}_{s \sim \mu}\, \mathbb{E}_{a \sim q(\cdot \mid s)}\big[ Q(s, a) \big] \quad \text{subject to} \quad \mathbb{E}_{s \sim \mu}\Big[ \mathrm{KL}\big( q(\cdot \mid s) \,\|\, \pi_{\mathrm{old}}(\cdot \mid s) \big) \Big] \le \epsilon_E .
+$$
+
+<Result name="Solution of the E-step">
+The optimal $q$ has the form
+$$
+q(a \mid s) = \frac{\pi_{\mathrm{old}}(a \mid s)\, \exp\big( Q(s, a)/\eta^\ast \big)}{\mathbb{E}_{a' \sim \pi_{\mathrm{old}}(\cdot \mid s)}\big[ \exp\big( Q(s, a')/\eta^\ast \big) \big]},
+$$
+where $\eta^\ast \gt 0$ minimizes the convex dual function
+$$
+g(\eta) = \eta\, \epsilon_E + \eta\, \mathbb{E}_{s \sim \mu}\Big[ \log \mathbb{E}_{a \sim \pi_{\mathrm{old}}(\cdot \mid s)}\big[ \exp\big( Q(s, a)/\eta \big) \big] \Big].
+$$
+</Result>
+
+*Proof sketch.* Attach a multiplier $\eta \ge 0$ to the KL constraint and multipliers for normalization of each $q(\cdot \mid s)$. For fixed $\eta$, the Lagrangian separates over states, and at each state it is $\mathbb{E}_q[Q] - \eta\, \mathrm{KL}(q \,\|\, \pi_{\mathrm{old}})$ plus terms independent of $q$. This is the KL-regularized problem of the previous section with reward $Q(s, \cdot)$, reference $\pi_{\mathrm{old}}(\cdot \mid s)$ and coefficient $\eta$; its maximizer is the tilted distribution above and its value is $\eta \log \mathbb{E}_{\pi_{\mathrm{old}}}[e^{Q/\eta}]$. Adding back $\eta\, \epsilon_E$ from the constraint and averaging over states gives $g(\eta)$. The dual of a convex problem is minimized over the multiplier; $g$ is convex in $\eta$ because $\eta \log \mathbb{E}[e^{Q/\eta}]$ is the perspective of a convex function. $\square$
+
+So the E-step is precisely the KL-regularized optimum, with the critic in place of the reward and with the temperature chosen automatically so that the reweighting moves the policy by about $\epsilon_E$ in KL, no more. In practice the expectations are replaced by samples. For each state $s_j$ in a minibatch, draw $N$ actions $a_{j1}, \dots, a_{jN}$ from $\pi_{\mathrm{old}}$, evaluate $Q_\phi$, and form self-normalized weights
+$$
+w_{jk} = \frac{\exp\big( Q_\phi(s_j, a_{jk})/\eta \big)}{\sum_{l=1}^{N} \exp\big( Q_\phi(s_j, a_{jl})/\eta \big)},
+$$
+a softmax over the candidate actions of each state; $\eta$ is updated by a few gradient steps on the sample version of $g$. Only critic evaluations are needed, never a gradient of $Q$ with respect to the action and never a likelihood ratio.
+
+### The M-step: weighted maximum likelihood with a trust region
+
+The M-step fits the policy to the weighted samples,
+$$
+\max_\theta \; \sum_j \sum_k w_{jk} \log \pi_\theta(a_{jk} \mid s_j) \quad \text{subject to} \quad \mathbb{E}_{s \sim \mu}\Big[ \mathrm{KL}\big( \pi_{\mathrm{old}}(\cdot \mid s) \,\|\, \pi_\theta(\cdot \mid s) \big) \Big] \le \epsilon_M ,
+$$
+a weighted version of the supervised loss used to train the policy in the first place. The constraint is the "prior" of the MAP view: it keeps the new parametric policy near the old one even when the weighted samples are few and noisy. It is enforced with a Lagrange multiplier adjusted during optimization. For Gaussian policies, MPO splits the constraint into separate bounds on the change of the mean and of the covariance; the fitted covariance otherwise tends to shrink quickly to the few best samples, ending exploration early.
+
+```
+initialize policy pi_theta, critic Q_phi, temperature eta, replay buffer
+loop:
+    act in the environment with pi_theta; add transitions to the buffer
+    critic:  update Q_phi on buffer samples with an off-policy TD target
+    E-step:  for each sampled state s_j draw N actions from pi_old
+             w_jk = softmax over k of Q_phi(s_j, a_jk) / eta
+             take gradient steps on the dual g(eta)
+    M-step:  maximize sum_jk w_jk log pi_theta(a_jk | s_j)
+             subject to KL(pi_old || pi_theta) <= eps_M  (Lagrangian)
+    pi_old <- pi_theta
+```
+
+### Relatives and why the idea travels
+
+Several methods share the two steps and differ in the details.
+
+- **REPS** (relative entropy policy search; Peters, Mülling and Altün, AAAI 2010) introduced the KL-bounded reweighting with a dual for the temperature, applied to state–action distributions.
+- **Advantage-weighted regression** (AWR; Peng et al., 2019) uses a fixed temperature, advantages rather than Q-values, and only the actions already in the data (one per state), giving the weighted log-likelihood $\exp(A/\beta) \log \pi_\theta$ that Section 9 derives for offline robot learning.
+- **V-MPO** (Song et al., ICLR 2020) is an on-policy variant that learns a state-value function instead of $Q$ and computes the E-step weights from advantages, keeping only the better half of the samples.
+
+PPO and MPO both bound how far one update may move the policy, but in different places: PPO clips a likelihood ratio inside a policy-gradient surrogate, while MPO bounds a KL between distributions and turns the improvement step into weighted supervised learning. That last property is what makes the MPO pattern attractive for large models. The M-step is the pretraining loss with weights, so it applies unchanged to any policy that can be trained by maximum likelihood, including autoregressive action tokens and, with the denoising or flow-matching loss standing in for the log-likelihood, diffusion and flow action heads. The E-step needs only a critic that scores candidate actions, which can be learned off-policy from replay buffers and demonstrations. And the KL bound keeps the improved policy close to the pretrained one. Variants of this recipe, with advantage weighting or conditioning in place of the exact MPO E-step, are among the main routes to RL fine-tuning of robot foundation models (Section 9), and the reward-weighted flow matching of DiffusionNFT (Section 8) is a close cousin for image generators.
+
 ## Practical issues and research directions
 
 PPO with a KL penalty is the baseline that later methods are measured against, and most of them respond to one of its weaknesses.
@@ -322,4 +396,4 @@ PPO with a KL penalty is the baseline that later methods are measured against, a
 
 Section 4 puts these pieces together for language models: a reward model learned from human comparisons, KL-regularized PPO to optimize it, and the closed-form optimal policy above turned into a loss that needs no reinforcement learning at all.
 
-Further reading: R. J. Williams, *Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement Learning*, Machine Learning, 1992; R. S. Sutton et al., *Policy Gradient Methods for Reinforcement Learning with Function Approximation*, NIPS 12, 2000; S. Kakade, *A Natural Policy Gradient*, NIPS 2001; S. Kakade and J. Langford, *Approximately Optimal Approximate Reinforcement Learning*, ICML 2002; J. Schulman et al., *Trust Region Policy Optimization*, ICML 2015; J. Schulman et al., *High-Dimensional Continuous Control Using Generalized Advantage Estimation*, ICLR 2016; J. Schulman et al., *Proximal Policy Optimization Algorithms*, arXiv 2017; L. Engstrom et al., *Implementation Matters in Deep Policy Gradients: A Case Study on PPO and TRPO*, ICLR 2020.
+Further reading: R. J. Williams, *Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement Learning*, Machine Learning, 1992; R. S. Sutton et al., *Policy Gradient Methods for Reinforcement Learning with Function Approximation*, NIPS 12, 2000; S. Kakade, *A Natural Policy Gradient*, NIPS 2001; S. Kakade and J. Langford, *Approximately Optimal Approximate Reinforcement Learning*, ICML 2002; J. Schulman et al., *Trust Region Policy Optimization*, ICML 2015; J. Schulman et al., *High-Dimensional Continuous Control Using Generalized Advantage Estimation*, ICLR 2016; J. Schulman et al., *Proximal Policy Optimization Algorithms*, arXiv 2017; L. Engstrom et al., *Implementation Matters in Deep Policy Gradients: A Case Study on PPO and TRPO*, ICLR 2020; A. Abdolmaleki et al., *Maximum a Posteriori Policy Optimisation* (ICLR 2018); J. Peters, K. Mülling and Y. Altün, *Relative Entropy Policy Search* (AAAI 2010); X. B. Peng et al., *Advantage-Weighted Regression: Simple and Scalable Off-Policy Reinforcement Learning* (2019); H. F. Song et al., *V-MPO: On-Policy Maximum a Posteriori Policy Optimization for Discrete and Continuous Control* (ICLR 2020).

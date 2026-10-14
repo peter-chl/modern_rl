@@ -149,7 +149,7 @@ Projecting $\pi^\star$ onto the parametric family by minimizing $\mathrm{KL}(\pi
 $$
 \max_\theta \; \mathbb{E}_{s,\, a \sim \pi_{\mathrm{ref}}}\!\left[ \exp\!\left( \frac{A(s, a)}{\beta} \right) \log \pi_\theta(a \mid s) \right].
 $$
-This is **advantage-weighted regression** (reward-weighted regression when returns replace advantages). It needs only $\log \pi_\theta$ of logged actions, never a ratio or a sample from $\pi_\theta$, which makes it attractive for large models and for continuous heads whose training loss is a stand-in for the log-likelihood. Filtered BC is the limit in which the weight is an indicator of success.
+This is **advantage-weighted regression** (reward-weighted regression when returns replace advantages). It is the single-sample, fixed-temperature special case of the E-step and M-step of maximum a posteriori policy optimization (MPO, Section 3), which samples several candidate actions per state, scores them with a learned critic, and chooses the temperature through a KL bound. It needs only $\log \pi_\theta$ of logged actions, never a ratio or a sample from $\pi_\theta$, which makes it attractive for large models and for continuous heads whose training loss is a stand-in for the log-likelihood. Filtered BC is the limit in which the weight is an indicator of success.
 
 A related idea is to **condition** rather than weight: add the advantage, or a binary "this action was good" flag, as an extra input during training, and at deployment condition on the good value. The model learns from all data, including failures, and the conditioning steers it towards the better part of its distribution.
 

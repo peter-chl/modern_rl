@@ -32,7 +32,7 @@ export const parts: Part[] = [
         slug: "policy-gradients",
         title: "Policy Gradients and PPO",
         summary:
-          "Differentiating expected reward directly: the policy gradient theorem, baselines and advantages, actor–critic methods, and the trust-region idea behind TRPO and PPO that every later section reuses.",
+          "Differentiating expected reward directly: the policy gradient theorem, baselines and advantages, actor–critic methods, and the trust-region idea behind TRPO and PPO that every later section reuses, and the KL-regularized optimum with its EM-style counterpart, maximum a posteriori policy optimization.",
       },
     ],
   },
