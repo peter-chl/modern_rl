@@ -302,18 +302,77 @@ The rewards cover five kinds of signal: image aesthetics (HPS-v2.1, a human-pref
 
 Both papers confirm the point of this section: once the sampler is stochastic, a flow model is an ordinary policy, and the LLM machinery of Section 5 carries over with little change. Their differences are engineering answers to the same questions — how much noise to inject, how to save compute on long chains, and how to keep a learned reward from being gamed.
 
-## Three families compared
+## DiffusionNFT: reinforcement on the forward process
 
-| | Policy gradient (DDPO, DPOK, Flow-GRPO) | Reward backpropagation (DRaFT, AlignProp, ReFL) | DPO-style (Diffusion-DPO) |
-|---|---|---|---|
-| What the reward must provide | values only | gradient with respect to pixels | pairwise preferences, offline |
-| Sampler requirement | stochastic steps with tractable log-probs | differentiable, may be deterministic | none at training time |
-| Data | online samples from current model | online samples from current model | fixed dataset of pairs |
-| Gradient | unbiased (before clipping), high variance | low variance, biased under truncation | from a chain of approximations |
-| Credit assignment over steps | same terminal advantage to every step | exact through differentiated steps | uniform over a sampled step |
-| Main risk | sample cost, slow progress | fast reward hacking | limited to the data distribution |
+Flow-GRPO and DanceGRPO pay three prices for treating the sampler as a policy: the sampler must be stochastic (an SDE rather than the ODE the model was trained for), whole denoising trajectories must be stored to recompute per-step log-probabilities, and the classifier-free guidance used at inference complicates the likelihoods. **DiffusionNFT** (K. Zheng, H. Chen and colleagues, NVIDIA, Tsinghua University and Stanford University; ICLR 2026; [paper](https://arxiv.org/abs/2509.16117), [project page](https://research.nvidia.com/labs/dir/DiffusionNFT), [code](https://github.com/NVlabs/DiffusionNFT)) avoids all three. It never computes a likelihood of the sampling chain. Instead it trains on the **forward process**, with the ordinary flow-matching loss applied to the model's own reward-labelled samples, in a form that pushes the model towards good samples and away from bad ones. The name comes from Negative-aware Fine-Tuning (NFT), a method by overlapping authors for language-model reasoning that uses the same implicit-negative construction.
 
-Non-differentiable rewards (OCR, detectors, vision-language judges, compressibility) rule out the middle column; offline preference pairs without a reward model point to the right one.
+### Positive and negative halves of the data
+
+Collect samples $x_0$ from the current ("old") model $v_{\mathrm{old}}$ with any sampler, deterministic or not, score them, and turn each reward into a number $w(x_0) \in [0, 1]$, read as the probability that the sample is "good". In the released code $w$ comes from the group-normalized advantage: clip it to $[-A_{\max}, A_{\max}]$ and map it linearly onto $[0, 1]$, so the group mean sits at one half. This splits the old model's distribution, conceptually, into a positive and a negative part,
+$$
+\pi^{+}(x_0) \propto w(x_0)\, \pi_{\mathrm{old}}(x_0), \qquad \pi^{-}(x_0) \propto \big(1 - w(x_0)\big)\, \pi_{\mathrm{old}}(x_0),
+$$
+with $\pi_{\mathrm{old}}$ a mixture of the two. Each distribution has its own flow-matching velocity field. With the interpolation $x_t = (1 - t)\, x_0 + t \varepsilon$ of Section 8.2, the velocity of a distribution is the conditional expectation of $\varepsilon - x_0$ given $x_t$; write $v^{+}$, $v^{-}$ and $v_{\mathrm{old}}$ for the three. Because $\pi_{\mathrm{old}}$ is the mixture, at every point
+$$
+v_{\mathrm{old}}(x_t) = a(x_t)\, v^{+}(x_t) + \big(1 - a(x_t)\big)\, v^{-}(x_t), \qquad a(x_t) = \mathbb{E}_{\mathrm{old}}\big[ w(x_0) \mid x_t \big],
+$$
+where $a(x_t)$ is the posterior probability that a noisy point came from the positive part. The direction of improvement is $v^{+} - v_{\mathrm{old}}$, towards the good samples and away from the bad.
+
+### The loss
+
+DiffusionNFT never fits $v^{+}$ and $v^{-}$ separately. It defines, from the trainable field $v_\theta$ and a strength $\kappa \gt 0$ (called $\beta$ in the paper; $\beta$ is the KL coefficient in these notes), an **implicit positive** and an **implicit negative** velocity,
+$$
+v_\theta^{+} = (1 - \kappa)\, v_{\mathrm{old}} + \kappa\, v_\theta, \qquad v_\theta^{-} = (1 + \kappa)\, v_{\mathrm{old}} - \kappa\, v_\theta,
+$$
+which are reflections of each other about $v_{\mathrm{old}}$, and trains them with reward-weighted flow matching on the collected samples:
+$$
+\mathcal{L}(\theta) = \mathbb{E}_{x_0 \sim \pi_{\mathrm{old}},\, t,\, \varepsilon} \Big[ w(x_0)\, \big\| v_\theta^{+}(x_t) - (\varepsilon - x_0) \big\|^2 + \big(1 - w(x_0)\big)\, \big\| v_\theta^{-}(x_t) - (\varepsilon - x_0) \big\|^2 \Big].
+$$
+Good samples teach the positive velocity, bad samples teach the negative one, and since both are tied to the same $v_\theta$, both lessons move it in the same direction.
+
+<Result name="The optimum of the NFT loss">
+With unlimited capacity, the minimizer of $\mathcal{L}$ is
+$$
+v_\theta^{\ast}(x_t) = v_{\mathrm{old}}(x_t) + \frac{2\, a(x_t)}{\kappa}\, \big( v^{+}(x_t) - v_{\mathrm{old}}(x_t) \big) = v_{\mathrm{old}}(x_t) + \frac{2\, a(x_t) \big(1 - a(x_t)\big)}{\kappa}\, \big( v^{+}(x_t) - v^{-}(x_t) \big).
+$$
+</Result>
+
+*Proof.* Fix $x_t$ and condition on it. Write $u = v_\theta(x_t)$ and $d = \kappa (u - v_{\mathrm{old}})$, so that $v_\theta^{+} = v_{\mathrm{old}} + d$ and $v_\theta^{-} = v_{\mathrm{old}} - d$. Expanding the squares, the conditional loss is, up to terms that do not depend on $u$,
+$$
+a\, \| v_{\mathrm{old}} + d - v^{+} \|^2 + (1 - a)\, \| v_{\mathrm{old}} - d - v^{-} \|^2 ,
+$$
+because $\mathbb{E}[w\, (\varepsilon - x_0) \mid x_t] = a\, v^{+}$ and $\mathbb{E}[(1 - w)(\varepsilon - x_0) \mid x_t] = (1 - a)\, v^{-}$ by the definitions of $\pi^{\pm}$. Setting the gradient in $d$ to zero gives $d = a\, v^{+} - (1 - a)\, v^{-} - (2a - 1)\, v_{\mathrm{old}}$. Substituting $v_{\mathrm{old}} = a v^{+} + (1 - a) v^{-}$ simplifies this to $d = 2a(1 - a)(v^{+} - v^{-}) = 2a\, (v^{+} - v_{\mathrm{old}})$, and $u = v_{\mathrm{old}} + d/\kappa$. $\square$
+
+The update is therefore a step from the old velocity along $v^{+} - v^{-}$, the difference between "good" and "bad" velocities, with size controlled by $\kappa$. This has the shape of classifier-free guidance, $v + s\,(v_{\mathrm{cond}} - v_{\mathrm{uncond}})$, with good-versus-bad replacing conditional-versus-unconditional, which is one way to see why reward fine-tuning of this kind can make guidance at inference unnecessary; the main released configurations sample without classifier-free guidance. Small $\kappa$ means large, aggressive steps; large $\kappa$ keeps $v_\theta$ close to $v_{\mathrm{old}}$, a trust region expressed in velocity space rather than through a likelihood ratio.
+
+### The algorithm in practice
+
+Each iteration of the released implementation does the following.
+
+1. **Collect.** For each prompt, generate $K$ images with the old model using any solver (the code uses a second-order DPM-Solver-style sampler, without classifier-free guidance), and keep only the clean final latents.
+2. **Score.** Compute the rewards, normalize them within each prompt's group, clip, and map to $w \in [0, 1]$.
+3. **Train on the forward process.** For each stored image draw a time $t$ and noise $\varepsilon$, form $x_t = (1 - t) x_0 + t \varepsilon$, and take gradient steps on $\mathcal{L}$. The code writes the two squared errors in terms of predicted clean images $x_t - t\, v$ and divides each by a detached mean absolute error, an adaptive weighting across noise levels, and adds a small penalty $\| v_\theta - v_{\mathrm{ref}} \|^2$ towards the pretrained model as a regularizer.
+4. **Update the old model softly.** $v_{\mathrm{old}}$ is not replaced by $v_\theta$ after each iteration but moved towards it as an exponential moving average, $\theta_{\mathrm{old}} \leftarrow \lambda_k\, \theta_{\mathrm{old}} + (1 - \lambda_k)\, \theta$, with the mixing weight $\lambda_k$ growing on a schedule. Early on the old model tracks the trained one closely; later it lags, which stabilizes the reference point of the implicit positive and negative policies.
+
+Compared with Flow-GRPO, nothing in the loss depends on how the samples were generated: no per-step Gaussian, no SDE noise level, no stored trajectories, no likelihood ratio and no clipping of ratios. The training signal is ordinary flow matching, so the method plugs into existing diffusion training code and inherits its stability. The cost is a different kind of approximation: the method is off-policy in the sense of learning from samples of $v_{\mathrm{old}}$ rather than $v_\theta$, and its target is the reweighted distribution $\pi^{+}$, a filtered-imitation view of improvement closer to reward-weighted regression (Section 9) than to a policy gradient. How the two families compare on credit assignment over the denoising chain, which DiffusionNFT does not model at all, is an open question.
+
+### Models, tasks and rewards
+
+The experiments fine-tune **Stable Diffusion 3.5 Medium**, the same base model as Flow-GRPO, and use the same task rewards and reward servers: GenEval compositional checks, OCR text rendering and PickScore, along with CLIP score, HPS-v2.1, the LAION aesthetic predictor, ImageReward and UnifiedReward. Besides single-reward runs, the authors train one model jointly on several of these rewards and release that checkpoint. They report reaching Flow-GRPO's scores in substantially less training compute, and doing so without classifier-free guidance at inference.
+
+
+## Four families compared
+
+| | Policy gradient (DDPO, DPOK, Flow-GRPO, DanceGRPO) | Reward backpropagation (DRaFT, AlignProp, ReFL) | DPO-style (Diffusion-DPO) | Forward-process (DiffusionNFT) |
+|---|---|---|---|---|
+| What the reward must provide | values only | gradient with respect to pixels | pairwise preferences, offline | values only |
+| Sampler requirement | stochastic steps with tractable log-probs | differentiable, may be deterministic | none at training time | any solver, only clean samples kept |
+| Data | online samples from current model | online samples from current model | fixed dataset of pairs | online samples from a lagging old model |
+| Gradient | unbiased (before clipping), high variance | low variance, biased under truncation | from a chain of approximations | flow-matching regression, low variance |
+| Credit assignment over steps | same terminal advantage to every step | exact through differentiated steps | uniform over a sampled step | none: trains on noised clean samples |
+| Main risk | sample cost, slow progress | fast reward hacking | limited to the data distribution | target is a reweighting of old samples |
+
+Non-differentiable rewards (OCR, detectors, vision-language judges, compressibility) rule out reward backpropagation; offline preference pairs without a reward model point to the DPO-style column; a fast deterministic sampler, or a codebase built around the flow-matching loss, points to the forward-process column.
 
 ## Reward models for generation
 
@@ -505,4 +564,4 @@ Autoregressive models tokenize images with a discrete tokenizer and generate tok
 
 Section 9 turns to robot policies. Many current vision-language-action models produce their actions with a diffusion or flow-matching head, and such a head is a generator of exactly the kind studied here, whose samples are action chunks instead of images. The denoising MDP, the ODE-to-SDE conversion and Flow-GRPO's per-step Gaussian log-probabilities carry over directly; what is new is that each generated chunk is executed by a robot, real or simulated, so the denoising chain becomes the inner loop of a longer decision process with its own dynamics and rewards.
 
-Further reading: J. Ho et al., *Denoising Diffusion Probabilistic Models* (NeurIPS 2020); Y. Lipman et al., *Flow Matching for Generative Modeling* (ICLR 2023); K. Black et al., *Training Diffusion Models with Reinforcement Learning* (2023), for DDPO and the denoising MDP; Y. Fan et al., *DPOK: Reinforcement Learning for Fine-tuning Text-to-Image Diffusion Models* (NeurIPS 2023); K. Clark et al., *Directly Fine-Tuning Diffusion Models on Differentiable Rewards* (2023), for DRaFT; B. Wallace et al., *Diffusion Model Alignment Using Direct Preference Optimization* (2023); J. Liu et al., *Flow-GRPO: Training Flow Matching Models via Online RL* (NeurIPS 2025; [arXiv 2505.05470](https://arxiv.org/abs/2505.05470)); Z. Xue et al., *DanceGRPO: Unleashing GRPO on Visual Generation* (2025; [arXiv 2505.07818](https://arxiv.org/abs/2505.07818)); Z. An et al., *VGGRPO: Towards World-Consistent Video Generation with 4D Latent Reward* ([arXiv 2603.26599](https://arxiv.org/abs/2603.26599), 2026); for reward models: Y. Kirstain et al., *Pick-a-Pic: An Open Dataset of User Preferences for Text-to-Image Generation* (NeurIPS 2023); J. Xu et al., *ImageReward: Learning and Evaluating Human Preferences for Text-to-Image Generation* (NeurIPS 2023); X. Wu et al., *Human Preference Score v2* (2023); D. Ghosh et al., *GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment* (NeurIPS 2023); Z. Lin et al., *Evaluating Text-to-Visual Generation with Image-to-Text Generation* (ECCV 2024), for VQAScore; J. Liu et al., *Improving Video Generation with Human Feedback* (2025), for VideoReward.
+Further reading: J. Ho et al., *Denoising Diffusion Probabilistic Models* (NeurIPS 2020); Y. Lipman et al., *Flow Matching for Generative Modeling* (ICLR 2023); K. Black et al., *Training Diffusion Models with Reinforcement Learning* (2023), for DDPO and the denoising MDP; Y. Fan et al., *DPOK: Reinforcement Learning for Fine-tuning Text-to-Image Diffusion Models* (NeurIPS 2023); K. Clark et al., *Directly Fine-Tuning Diffusion Models on Differentiable Rewards* (2023), for DRaFT; B. Wallace et al., *Diffusion Model Alignment Using Direct Preference Optimization* (2023); J. Liu et al., *Flow-GRPO: Training Flow Matching Models via Online RL* (NeurIPS 2025; [arXiv 2505.05470](https://arxiv.org/abs/2505.05470)); Z. Xue et al., *DanceGRPO: Unleashing GRPO on Visual Generation* (2025; [arXiv 2505.07818](https://arxiv.org/abs/2505.07818)); K. Zheng et al., *DiffusionNFT: Online Diffusion Reinforcement with Forward Process* (ICLR 2026; [arXiv 2509.16117](https://arxiv.org/abs/2509.16117)); Z. An et al., *VGGRPO: Towards World-Consistent Video Generation with 4D Latent Reward* ([arXiv 2603.26599](https://arxiv.org/abs/2603.26599), 2026); for reward models: Y. Kirstain et al., *Pick-a-Pic: An Open Dataset of User Preferences for Text-to-Image Generation* (NeurIPS 2023); J. Xu et al., *ImageReward: Learning and Evaluating Human Preferences for Text-to-Image Generation* (NeurIPS 2023); X. Wu et al., *Human Preference Score v2* (2023); D. Ghosh et al., *GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment* (NeurIPS 2023); Z. Lin et al., *Evaluating Text-to-Visual Generation with Image-to-Text Generation* (ECCV 2024), for VQAScore; J. Liu et al., *Improving Video Generation with Human Feedback* (2025), for VideoReward.
