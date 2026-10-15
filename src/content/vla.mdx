@@ -137,7 +137,7 @@ For a large VLA, updating all its weights online is usually too slow and too ris
 
 ### Residual RL
 
-**Residual RL** keeps the pretrained policy frozen and learns a small second policy that edits its actions. The base model supplies what it is good at, the coarse shape of a behaviour learned from large datasets; the residual supplies the precise, task-specific corrections that pretraining and a handful of demonstrations do not, and only the residual is trained by RL. The idea is older than VLAs (Silver et al., 2018, and Johannink et al., 2019, introduced it for correcting hand-designed controllers; later work applied it to behaviour-cloned policies, for example Ankile et al., 2025), but it has become one of the main ways to put a billion-parameter VLA in an RL loop, because the trainable part is small, fast and can use sample-efficient off-policy algorithms regardless of how the base model generates actions.
+**Residual RL** keeps the pretrained policy frozen and learns a small second policy that edits its actions. The base model supplies what it is good at, the coarse shape of a behaviour learned from large datasets; the residual supplies the precise, task-specific corrections that pretraining and a handful of demonstrations do not, and only the residual is trained by RL. The idea is older than VLAs (Section 1 traces it to residual corrections of hand-designed robot controllers; later work applied it to behaviour-cloned policies, for example Ankile et al., 2025), but it has become one of the main ways to put a billion-parameter VLA in an RL loop, because the trainable part is small, fast and can use sample-efficient off-policy algorithms regardless of how the base model generates actions.
 
 #### The residual MDP
 
@@ -145,7 +145,7 @@ Let $\pi_{\mathrm{base}}(a \mid s, \ell)$ be the frozen base policy, with $s$ th
 $$
 s_{t+1} \sim P\big( \cdot \mid s_t,\, a_t^{\mathrm{base}} + \Delta a_t \big), \qquad a_{t+1}^{\mathrm{base}} \sim \pi_{\mathrm{base}}(\cdot \mid s_{t+1}, \ell),
 $$
-with the task reward unchanged. Since this is a Markov decision process in its own right, every algorithm of Sections 2 and 3 applies to it unchanged: the base model is simply part of the environment, and its sampling noise is part of the transition noise. Nothing requires the base model's likelihood, so a diffusion or flow head poses no difficulty, and with action chunks the residual edits a whole chunk at once.
+with the task reward unchanged. Section 1 shows that this is a Markov decision process in its own right, and that its optimal value lies between the base policy's value (when a zero correction is allowed) and the optimal value of the original task (reached when every action can be produced from every proposal). So every algorithm of Sections 2 and 3 applies to it unchanged: the base model is simply part of the environment, and its sampling noise is part of the transition noise. Nothing requires the base model's likelihood, so a diffusion or flow head poses no difficulty, and with action chunks the residual edits a whole chunk at once.
 
 Three design choices recur.
 

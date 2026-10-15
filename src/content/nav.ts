@@ -20,7 +20,7 @@ export const parts: Part[] = [
         slug: "introduction",
         title: "What Is Reinforcement Learning?",
         summary:
-          "Learning from reward rather than from labels: Markov decision processes, returns and value functions, the Bellman equations, and the classical families of algorithms built on them.",
+          "Learning from reward rather than from labels: Markov decision processes, returns and value functions, the Bellman equations, the classical families of algorithms built on them, and how to start from an existing policy, including residual RL.",
       },
       {
         slug: "td-learning",

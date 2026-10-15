@@ -243,13 +243,44 @@ Classical RL algorithms fall into three broad families, according to what they l
 
 The families overlap — actor–critic methods are both value- and policy-based, and a model needs one of the others to become behaviour — so the table describes emphasis, not boundaries.
 
+## Starting from an existing policy
+
+Everything above learns a policy from nothing. In the rest of these notes the learner almost always starts from a policy that already works reasonably well, and classical RL offers three ways to use it.
+
+1. **Initialize from it.** Start the learner's parameters at the existing policy and continue training. This is ordinary fine-tuning, and it is how policy-gradient methods are applied to pretrained models.
+2. **Regularize towards it.** Add a penalty, typically a KL divergence, that keeps the learned policy close to the existing one. Section 3 derives what this does to the optimal policy, and it is the basis of most of Sections 4 to 9.
+3. **Compose with it.** Keep the existing policy fixed and learn a second policy that modifies its actions. This is **residual reinforcement learning**.
+
+The third route has its roots in control engineering rather than in the core theory of RL. A learned feedback correction added to a nominal controller is a long-standing pattern there, and Silver et al. (2018) and Johannink et al. (2019) brought it into deep RL, learning residual corrections to hand-designed robot controllers. (Despite the name, it is unrelated to the "residual algorithms" of Baird, 1995, which minimize Bellman residuals in value learning.) Its justification, however, is entirely classical: a fixed policy can be folded into the environment, and what remains is again an MDP.
+
+<Definition name="Residual MDP">
+Let $\pi_b$ be a fixed stationary **base policy** for an MDP $(\mathcal{S}, \mathcal{A}, P, r, \gamma, \mu)$. Let $\mathcal{U}$ be a set of **corrections** and $g : \mathcal{A} \times \mathcal{U} \to \mathcal{A}$ a map that combines a base action with a correction, for example $g(a, u) = a + u$ (the additive form) or $g(a, u) = u$ (the residual chooses the executed action outright, seeing the base action as input). The residual MDP has states $x = (s, a^b) \in \mathcal{S} \times \mathcal{A}$, actions $u \in \mathcal{U}$, and
+$$
+s' \sim P\big( \cdot \mid s, g(a^b, u) \big), \qquad a^{b\prime} \sim \pi_b(\cdot \mid s'), \qquad \text{reward } r\big( s, g(a^b, u) \big),
+$$
+with initial state $s_0 \sim \mu$, $a^b_0 \sim \pi_b(\cdot \mid s_0)$ and the same discount $\gamma$.
+</Definition>
+
+<Result name="Residual policies and optimal values">
+1. The residual MDP is an MDP: the distribution of the next state $(s', a^{b\prime})$ depends only on the current state $(s, a^b)$ and the correction $u$.
+2. Every residual policy $\rho(u \mid s, a^b)$ has the same return as the policy of the original MDP that draws $a^b \sim \pi_b(\cdot \mid s)$, then $u \sim \rho(\cdot \mid s, a^b)$, and executes $g(a^b, u)$. Hence the optimal value of the residual MDP satisfies $V^\ast_{\mathrm{res}} \le V^\ast$.
+3. If some correction $u_0$ leaves every action unchanged, $g(a, u_0) = a$, then $V^\ast_{\mathrm{res}} \ge V^{\pi_b}$.
+4. If every action is reachable from every base action, that is, for all $a^b$ and $a$ there is a $u$ with $g(a^b, u) = a$, then $V^\ast_{\mathrm{res}} = V^\ast$.
+</Result>
+
+*Proof.* (1) Given $(s, a^b)$ and $u$, the next observation is drawn from $P(\cdot \mid s, g(a^b, u))$, and the next base action from $\pi_b(\cdot \mid s')$, which depends on nothing else. (2) Under the composite policy, at each step $a^b_t$ is drawn from $\pi_b(\cdot \mid s_t)$ and $u_t$ from $\rho(\cdot \mid s_t, a^b_t)$, exactly as in the residual MDP; the executed actions, and hence the sequence of states and rewards, have the same distribution in both processes. The composite policy is a stationary stochastic policy of the original MDP, so its value is at most $V^\ast$. (3) The residual policy that always outputs $u_0$ reproduces $\pi_b$. (4) Take a deterministic optimal policy $\pi^\ast$ of the original MDP, which exists by the optimality result above, and let the residual policy output, for each $(s, a^b)$, a correction $u$ with $g(a^b, u) = \pi^\ast(s)$; by (2) its value is $V^\ast$. $\square$
+
+The result locates the trade-off between the two common forms. A **bounded additive** correction, $\|u\| \le c$, always contains the null correction, so the residual can never do worse than the base policy at the optimum; but it can only reach actions within distance $c$ of what the base policy proposes, so its optimum may fall short of $V^\ast$. A residual that **chooses the executed action directly** satisfies the condition in (4) and can in principle reach any policy at all; what keeps it near the base behaviour in practice is its initialization and its training data rather than its parameterization. In both cases the base policy's randomness has become part of the environment's transition noise: the residual cannot control which base action is proposed, only respond to it.
+
+Three properties make the reduction useful. The base policy can be anything that outputs actions, however large, and its likelihood is never needed. The residual can be small, and any algorithm of Sections 2 and 3 can train it, including sample-efficient off-policy actor–critic methods. And at the start of training the residual can reproduce the base policy exactly, so learning begins from the base policy's performance rather than from scratch. Section 9 uses residual RL to adapt large robot policies.
+
 ## Where this leads
 
 For a large pretrained model, the balance in that table shifts decisively. The action space — a vocabulary of many thousands of tokens per step, a high-dimensional denoising update, a continuous chunk of robot actions — is far too large for a value-based maximization. The policy already exists, as a pretrained network that is good enough to produce sensible behaviour before any RL, and what is wanted is to adjust it, not to learn one from scratch. Both facts favour policy-based methods, and almost everything in the rest of these notes is a variant of the policy gradient.
 
 The pieces of the classical setup map onto the modern one as follows.
 
-- **The policy is a pretrained network**: a language model, a diffusion or flow model, or a vision-language-action model, usually kept close to its pretrained starting point by a KL penalty towards a reference policy $\pi_{\mathrm{ref}}$.
+- **The policy is a pretrained network**: a language model, a diffusion or flow model, or a vision-language-action model, usually kept close to its pretrained starting point by a KL penalty towards a reference policy $\pi_{\mathrm{ref}}$, or frozen and corrected by a small residual policy.
 - **The episode is a generated object**: a token sequence for a language model, a chain of denoising steps $x_T \to x_{T-1} \to \cdots \to x_0$ for an image or video model, or a sequence of action chunks for a robot.
 - **The reward is a judge**: a reward model $r_\phi$ trained on human comparisons, a program that checks a final answer or runs unit tests, a learned aesthetic or alignment score for images, or a success detector on a robot. It typically arrives once, at the end of the episode.
 
@@ -257,4 +288,4 @@ Section 2 develops the value-learning side of the table — TD learning, Q-learn
 
 Section 3 starts from the observation made earlier about trajectory probabilities: the dynamics drop out of the gradient of $\log p_\pi(\tau)$, so one can improve a policy without ever modelling its environment.
 
-Further reading: R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, 2nd ed. (MIT Press, 2018) — the standard text; C. Szepesvári, *Algorithms for Reinforcement Learning* (2010), a short and rigorous account of the classical algorithms; D. P. Bertsekas, *Dynamic Programming and Optimal Control*, for the dynamic-programming and contraction theory.
+Further reading: R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, 2nd ed. (MIT Press, 2018) — the standard text; C. Szepesvári, *Algorithms for Reinforcement Learning* (2010), a short and rigorous account of the classical algorithms; D. P. Bertsekas, *Dynamic Programming and Optimal Control*, for the dynamic-programming and contraction theory; T. Silver et al., *Residual Policy Learning* (2018) and T. Johannink et al., *Residual Reinforcement Learning for Robot Control* (ICRA 2019), for residual RL.
