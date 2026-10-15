@@ -215,6 +215,10 @@ $$
 \nabla \log p_t(x) = -\frac{x + (1 - t)\, v_t(x)}{t}, \qquad 0 \lt t \le 1 .
 $$
 
+<Figure caption="Sampling a one-dimensional rectified flow whose data distribution is a mixture of two Gaussians. The shading is the marginal density p_t, the same in both panels; lines are sample paths from the same starting noise. Left: the deterministic probability-flow ODE. Right: the SDE with the same marginals and noise schedule σ_t = a√(t/(1−t)) (capped near t = 1). At the end, the histograms of 600 samples match the data density (curve) in both cases: the noise changes individual paths, not the distribution. Velocity and score are exact for a Gaussian mixture; the only approximation is the Euler step.">
+<OdeSdeFigure />
+</Figure>
+
 ### The stochastic policy
 
 Replacing $v_t$ by $v_\theta$ and discretizing the reverse SDE with Euler–Maruyama and step $\Delta t \gt 0$ gives the update from $x_t$ to $x_{t - \Delta t}$:

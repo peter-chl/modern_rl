@@ -250,6 +250,10 @@ $$
 $$
 where $x^{(t)}$ is the denoising chain at robot step $t$ and every inner step of that chain shares the outer advantage $\hat A_t$. PPO applies with per-step ratios $\rho = p_\theta / p_{\theta_{\mathrm{old}}}$ for each inner transition; DPPO, below, is the worked-out version of this idea for diffusion policies.
 
+<Figure caption="The two-layer MDP. Top: the robot's decision process, one decision per action chunk, with rewards and advantages computed on robot steps. Bottom: the denoising chain inside one robot step, whose Gaussian steps are the inner actions and whose final state is the executed chunk.">
+<TwoLayerMdpFigure />
+</Figure>
+
 The differences from Section 8 are in credit assignment and cost.
 
 - **Credit across two layers.** An image generator receives one reward per chain, so a single group-relative advantage per sample suffices. A robot episode contains many chains, and the outer advantages $\hat A_t$ must say which chunks mattered: from a learned value function over observations, or from group baselines when a simulator can reset to the same initial state. Inside each chain, all denoising steps still share one advantage, so the open question of Section 8, which denoising step deserves the credit, is now nested inside the outer one. The effective horizon is robot steps times denoising steps.
