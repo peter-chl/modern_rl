@@ -151,9 +151,65 @@ $$
 $$
 This is **advantage-weighted regression** (reward-weighted regression when returns replace advantages). It is the single-sample, fixed-temperature special case of the E-step and M-step of maximum a posteriori policy optimization (MPO, Section 3), which samples several candidate actions per state, scores them with a learned critic, and chooses the temperature through a KL bound. It needs only $\log \pi_\theta$ of logged actions, never a ratio or a sample from $\pi_\theta$, which makes it attractive for large models and for continuous heads whose training loss is a stand-in for the log-likelihood. Filtered BC is the limit in which the weight is an indicator of success.
 
-A related idea is to **condition** rather than weight: add the advantage, or a binary "this action was good" flag, as an extra input during training, and at deployment condition on the good value. The model learns from all data, including failures, and the conditioning steers it towards the better part of its distribution.
+A related idea is to **condition** rather than weight: add the advantage, or a binary "this action was good" flag, as an extra input during training, and at deployment condition on the good value. The model learns from all data, including failures, and the conditioning steers it towards the better part of its distribution. The next subsection develops this idea in its largest-scale instance so far.
 
 Finally, one can leave the policy untouched and learn a critic $Q_\phi(o, a)$ by offline RL on logged data, then use it at deployment: sample several candidate actions or chunks from the frozen VLA and execute the one with the highest $Q_\phi$. Because the candidates come from the policy, the critic only has to rank actions the policy already considers plausible, which avoids the worst failure of offline RL, an overestimated value on actions far from the data.
+
+### Advantage-conditioned policies: π\*0.6 and RECAP
+
+The most complete account so far of RL on a large flow-matching VLA in the real world comes from Physical Intelligence, in **π\*0.6: a VLA That Learns From Experience** (2025; [paper](https://arxiv.org/abs/2511.14759), [project page](https://pi.website/blog/pistar06)). The method, **RECAP** (RL with Experience and Corrections via Advantage-conditioned Policies), trains one generalist model on demonstrations, autonomous rollouts and human corrections, and is used to fine-tune it on long, contact-rich tasks: folding diverse laundry, assembling cardboard boxes in a factory setting, and making espresso drinks with a commercial machine. It is worth studying in detail because it is a direct descendant of the KL-regularized and MPO line of Section 3, which the paper cites as its starting point, and because it explains why that line, rather than PPO, suits a model like this.
+
+#### From the regularized optimum to an improvement indicator
+
+The paper starts from the regularized objective of Section 3 with the data-collecting policy as the reference, whose maximizer is the tilted distribution $\hat\pi(a \mid o) \propto \pi_{\mathrm{ref}}(a \mid o) \exp\big( A^{\pi_{\mathrm{ref}}}(o, a)/\beta \big)$, the target of MPO's E-step and of AWR. It then uses a less familiar variant from the work on classifier-free guidance as policy improvement by Frans et al. (2025): define a binary **improvement indicator** $I$ with $p(I \mid A^{\pi_{\mathrm{ref}}}(o, a))$ increasing in the advantage, and set
+$$
+\hat\pi(a \mid o) \propto \pi_{\mathrm{ref}}(a \mid o)\, p\big( I \mid A^{\pi_{\mathrm{ref}}}(o, a) \big)^{\beta}.
+$$
+Such a policy is guaranteed to improve on $\pi_{\mathrm{ref}}$. By Bayes' rule, $p(I \mid A(o, a)) = \pi_{\mathrm{ref}}(a \mid I, o)/\pi_{\mathrm{ref}}(a \mid o)$ up to a factor that does not depend on $a$, so
+$$
+\hat\pi(a \mid o, \ell) \propto \pi_{\mathrm{ref}}(a \mid o, \ell) \left( \frac{\pi_{\mathrm{ref}}(a \mid I, o, \ell)}{\pi_{\mathrm{ref}}(a \mid o, \ell)} \right)^{\beta},
+$$
+with $\ell$ the language command, and for $\beta = 1$ simply $\hat\pi = \pi_{\mathrm{ref}}(a \mid I, o, \ell)$. The improved policy never has to be represented by weights: it is the data distribution **conditioned on the indicator being true**. A model trained to represent both $\pi_{\mathrm{ref}}(a \mid o, \ell)$ and $\pi_{\mathrm{ref}}(a \mid I, o, \ell)$ contains the improved policy, and for $\beta \gt 1$ it can be sharpened at inference by classifier-free guidance between the conditional and unconditional predictions, the same guidance-shaped update that appeared in DiffusionNFT (Section 8).
+
+RECAP makes the indicator deterministic, $I_t = \mathbb{1}\big[ A^{\pi_{\mathrm{ref}}}(o_t, a_t, \ell) \gt \epsilon_\ell \big]$, with a per-task threshold $\epsilon_\ell$ set at a percentile of the predicted advantages, so that a chosen fraction of the data counts as "positive". The threshold plays the role of the temperature: the paper found it easier to control the trade-off between staying close to the data and improving on it through $\epsilon_\ell$ than through a large guidance weight $\beta$, which can push actions to the edges of the learned distribution and produce aggressive motions.
+
+#### Training the policy
+
+The policy loss is maximum likelihood, with and without the indicator:
+$$
+\min_\theta \; \mathbb{E}_{\mathcal{D}} \Big[ -\log \pi_\theta(a_t \mid o_t, \ell) - \alpha \log \pi_\theta(a_t \mid I_t, o_t, \ell) \Big].
+$$
+In practice the two terms are realized by randomly dropping the indicator from the input (30% of the time in the paper) rather than by tuning $\alpha$. The indicator enters the model as text ("Advantage: positive" or "Advantage: negative"), placed so that only the action predictions see it. The π0.6 model predicts both discrete action tokens (FAST, trained with cross-entropy) and continuous action chunks from a flow-matching action expert, whose exact log-likelihood is unavailable; the flow-matching loss serves as the lower bound on it, as with the denoising losses of Section 8. So the whole update is the pretraining loss with one extra input token, and every sample is used, positive or negative.
+
+Human corrections fit naturally: actions supplied by a teleoperator during an intervention are labelled $I_t = \text{true}$ regardless of the value function, on the assumption that an expert's correction is a good action.
+
+#### The value function
+
+Advantages come from a separate, smaller VLM-based **distributional value function** $p_\phi(V \mid o_t, \ell)$, a categorical distribution over 201 bins, trained by cross-entropy on discretized Monte Carlo returns of the data. The reward is generic and sparse: $-1$ per step, $0$ on the final step of a successful episode, and a large negative constant on failure, so the value predicts (minus) the number of steps to success; values are normalized per task to the interval from $-1$ to $0$. Because the targets are returns of the data, this estimates $V^{\pi_{\mathrm{ref}}}$ for the behaviour mixture, an on-policy Monte Carlo estimator in the sense of Section 2, which the authors chose for simplicity and reliability over an off-policy Q-function. During fine-tuning the advantage is an $N$-step estimate, $A(o_t, a_t) = \sum_{t'=t}^{t+N-1} r_{t'} + V(o_{t+N}) - V(o_t)$, with $N = 50$ control steps.
+
+#### The iterated loop
+
+```
+pre-train value function and policy (with indicator) on all demonstration data
+for each target task:
+    fine-tune value function and policy on the task's demonstrations (I = true)
+    repeat for k = 1..K:
+        deploy the policy; collect autonomous episodes with success labels,
+            optionally with expert interventions (labelled I = true)
+        add everything to the task dataset
+        re-train the value function on the dataset (from the pre-trained checkpoint)
+        recompute I_t with the new advantages; re-train the policy
+```
+
+Each iteration is an offline RL update on a growing dataset rather than a fully online loop, a choice the paper makes for practicality on real robots and lists as a direction for future work.
+
+#### Why not PPO or AWR
+
+The paper compares RECAP's advantage conditioning with two other ways of extracting a policy from the same value function and data. **AWR** (above) reached reasonable success rates but produced slower policies; weighted regression effectively discards much of the data by giving it negligible weight. A **PPO** variant for the flow-matching head, using a single-step diffusion likelihood in the spirit of FPO and DPPO, was hard to keep stable in this setting: with data collected in large batches from real robots, the usual clipped trust region did not hold up, and even with an alternative constraint (from simple policy optimization, SPO) and a small trust region it struggled to improve on the starting checkpoint, the offline-RL pre-trained model after supervised fine-tuning. Advantage conditioning avoids both problems: it needs no likelihood ratio, so the intractable likelihood of the flow head does not matter, and it keeps every sample.
+
+<Remark>
+RECAP, MPO, AWR and DiffusionNFT all aim at the same object, the reference policy tilted towards high advantage, and differ only in how the parametric policy is made to represent it. MPO and AWR **weight** samples in a maximum-likelihood loss; DiffusionNFT trains **implicit positive and negative** velocities whose difference is a guidance direction; RECAP **conditions** on a positive/negative label and recovers the tilt by Bayes' rule, with guidance as an optional sharpening. In each case the update is the model's pretraining loss, which is the property that makes this family, rather than likelihood-ratio methods, the natural choice for large diffusion and flow policies.
+</Remark>
 
 ### Searching with a world model
 
@@ -236,4 +292,4 @@ Simulation removes these costs but introduces the **sim-to-real gap**. Rendering
 
 Sections 4–9 have applied one recipe. Choose what the policy is: a distribution over tokens for language models and autoregressive image models, over text grounded in an image for vision-language models, over denoising steps for diffusion and flow models, and over action chunks for robot policies, where a flow or diffusion head nests the denoising chain inside each control step. Choose a reward: a preference model, a verifier, a teacher's per-token judgement, a learned judge, or task success. Optimize expected reward with a KL penalty to a reference policy, using policy gradients when only reward values are available, pathwise gradients when the reward or a critic is differentiable, and direct preference objectives when only comparisons are. What changes from modality to modality is how the policy's log-probability is exposed (exactly for tokens, through a chain bound for diffusion, after an ODE-to-SDE conversion for flows), how expensive a rollout is, and how easily the reward can be gamed. The recipe itself is the same.
 
-Further reading: A. Brohan et al., *RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control* (2023); M. J. Kim et al., *OpenVLA: An Open-Source Vision-Language-Action Model* (2024); K. Black et al., *$\pi_0$: A Vision-Language-Action Flow Model for General Robot Control* (2024); C. Chi et al., *Diffusion Policy: Visuomotor Policy Learning via Action Diffusion* (RSS 2023); S. Ross, G. Gordon and J. A. Bagnell, *A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning* (AISTATS 2011); J. Luo et al., *SERL: A Software Suite for Sample-Efficient Robotic Reinforcement Learning* (2024); A. Z. Ren et al., *Diffusion Policy Policy Optimization* (2024); P. Dong, Y. Jia, C. Finn and D. Sadigh, *Q-Learning with World Models* ([arXiv 2608.17163](https://arxiv.org/abs/2608.17163), 2026).
+Further reading: A. Brohan et al., *RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control* (2023); M. J. Kim et al., *OpenVLA: An Open-Source Vision-Language-Action Model* (2024); K. Black et al., *$\pi_0$: A Vision-Language-Action Flow Model for General Robot Control* (2024); C. Chi et al., *Diffusion Policy: Visuomotor Policy Learning via Action Diffusion* (RSS 2023); S. Ross, G. Gordon and J. A. Bagnell, *A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning* (AISTATS 2011); J. Luo et al., *SERL: A Software Suite for Sample-Efficient Robotic Reinforcement Learning* (2024); A. Z. Ren et al., *Diffusion Policy Policy Optimization* (2024); P. Dong, Y. Jia, C. Finn and D. Sadigh, *Q-Learning with World Models* ([arXiv 2608.17163](https://arxiv.org/abs/2608.17163), 2026); Physical Intelligence (A. Amin et al.), *π\*0.6: a VLA That Learns From Experience* (2025; [arXiv 2511.14759](https://arxiv.org/abs/2511.14759)); K. Frans et al., *Diffusion Guidance Is a Controllable Policy Improvement Operator* (2025).
